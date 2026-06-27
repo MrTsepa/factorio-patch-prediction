@@ -63,5 +63,8 @@ uv run python scripts/demo.py --checkpoint runs/poc_001/best.pt \
 
 It writes `docs/demo/montage_sprites.png` (gitignored). The renderer maps entity
 names to icons (with Factorio 1.1→2.0 aliases like `stack-inserter`→`bulk-inserter`,
-`straight-rail`→`rail`), draws direction arrows on belts/inserters, and falls back to
-colored cells for any entity without an icon — so it degrades gracefully.
+`straight-rail`→`rail`), **scales each icon to the entity's tile footprint** (3×3
+assemblers/beacons/electric-furnaces, 2×2 substations, 2×1 splitters, …) and
+**rotates it by the entity's direction**, drawing large entities first so
+belts/inserters land on top. Unknown entities fall back to colored cells, so it
+degrades gracefully.
