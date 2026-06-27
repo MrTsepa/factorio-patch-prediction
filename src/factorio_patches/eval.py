@@ -34,6 +34,60 @@ def load_checkpoint(path: Path, device):
 VERSION_1_1 = 281479275151360   # 1.1.x  (8-direction)
 VERSION_2_0 = 562949953421312   # 2.0.x  (16-direction)
 
+# Cardinal unit vector by index N/E/S/W (col,row) and underground reach per tier.
+_VEC = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+_UG_MAXD = {"underground-belt": 5, "fast-underground-belt": 7,
+            "express-underground-belt": 9, "turbo-underground-belt": 11}
+
+
+def _set_underground_types(entities, grid, vocab, version):
+    """Our grid token (name|direction) doesn't store an underground belt's
+    input/output type, so infer it from the layout: a transport-belt/splitter
+    immediately downstream => output, immediately upstream => input; with
+    lane-pairing (input then output along each flow lane) as the baseline."""
+    from collections import defaultdict
+    step = 4 if version >= VERSION_2_0 else 2
+    H, W = grid.shape
+
+    def beltlike(r, c):
+        if 0 <= r < H and 0 <= c < W:
+            nm, _ = split_token(vocab.decode(int(grid[r, c])))
+            return nm.endswith("transport-belt") or nm.endswith("splitter")
+        return False
+
+    ug = [e for e in entities if e["name"].endswith("underground-belt")]
+    # 1) lane-pairing baseline
+    groups = defaultdict(list)
+    for e in ug:
+        groups[(e["name"], (int(e.get("direction", 0)) // step) % 4)].append(e)
+    for (name, idx), es in groups.items():
+        vx, vy = _VEC[idx]; maxd = _UG_MAXD.get(name, 9)
+        lanes = defaultdict(list)
+        for e in es:
+            x, y = int(e["position"]["x"]), int(e["position"]["y"])
+            lanes[y if vx else x].append((x * vx + y * vy, e))
+        for arr in lanes.values():
+            arr.sort(key=lambda t: t[0])
+            expect_in, in_flow = True, None
+            for flow, e in arr:
+                if expect_in:
+                    e["type"], in_flow, expect_in = "input", flow, False
+                elif flow - in_flow <= maxd:
+                    e["type"], expect_in = "output", True
+                else:
+                    e["type"], in_flow = "input", flow
+    # 2) decisive neighbour override
+    for e in ug:
+        idx = (int(e.get("direction", 0)) // step) % 4
+        vx, vy = _VEC[idx]
+        x, y = int(e["position"]["x"]), int(e["position"]["y"])
+        down, up = beltlike(y + vy, x + vx), beltlike(y - vy, x - vx)
+        if down and not up:
+            e["type"] = "output"
+        elif up and not down:
+            e["type"] = "input"
+        e.setdefault("type", "input")
+
 
 def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
                       label: str = "predicted patch (factorio-patch-inpaint)",
@@ -63,6 +117,7 @@ def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
             if direction:
                 ent["direction"] = int(direction)
             entities.append(ent)
+    _set_underground_types(entities, grid, vocab, version)
     return {"blueprint": {"item": "blueprint", "entities": entities,
                           "version": version, "label": label}}
 
