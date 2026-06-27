@@ -14,5 +14,8 @@ outputs/
 .claude/
 cloud_out/
 
-# Demo images under docs/ ARE tracked (they are the visual demo).
-!docs/demo/
+# The abstract colored-cell demo (docs/demo/montage.png) IS tracked, but
+# sprite-rendered images embed Factorio's copyrighted icons — keep those local.
+docs/demo/*sprites*.png
+docs/demo/hero_sprites.png
+assets/

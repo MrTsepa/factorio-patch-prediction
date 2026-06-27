@@ -48,3 +48,20 @@ Full prediction galleries (input/target/prediction/diff per example) are written
 `uv run python -m factorio_patches.eval --checkpoint runs/poc_001/best.pt --split test`
 to `outputs/demo_predictions/`. See [README.md](README.md) for the end-to-end
 pipeline and [docs/findings.md](docs/findings.md) for the full write-up.
+
+## Optional: render with real Factorio sprites
+
+The same demo can be rendered with the **actual base-game entity icons** instead of
+colored cells (`src/factorio_patches/sprites.py`). The icons are Wube's copyrighted
+assets and are **not** bundled here — point `--sprites` at a local Factorio icon
+directory (e.g. an extracted `data/base/graphics/icons`, or set `$FACTORIO_ICONS`):
+
+```bash
+uv run python scripts/demo.py --checkpoint runs/poc_001/best.pt \
+  --out docs/demo --num 4 --cell 22 --sprites /path/to/factorio/.../graphics/icons
+```
+
+It writes `docs/demo/montage_sprites.png` (gitignored). The renderer maps entity
+names to icons (with Factorio 1.1→2.0 aliases like `stack-inserter`→`bulk-inserter`,
+`straight-rail`→`rail`), draws direction arrows on belts/inserters, and falls back to
+colored cells for any entity without an icon — so it degrades gracefully.

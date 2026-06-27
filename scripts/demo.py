@@ -19,6 +19,7 @@ from factorio_patches.dataset import load_dataset, make_datasets
 from factorio_patches.eval import load_checkpoint
 from factorio_patches.metrics import evaluate, format_metrics, most_common_entity_id
 from factorio_patches.render import hconcat, render_diff, render_grid
+from factorio_patches.sprites import SpriteRenderer
 from factorio_patches.vocab import EMPTY_ID
 
 COL_LABELS = ["INPUT (16x16 hole)", "TARGET (ground truth)", "PREDICTION", "DIFF (green=correct)"]
@@ -65,10 +66,22 @@ def main(argv=None) -> int:
     ap.add_argument("--cell", type=int, default=11)
     ap.add_argument("--split", default="test")
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--sprites", nargs="?", const="auto", default=None,
+                    help="render with real Factorio icons; optionally pass an icons dir "
+                         "(defaults to $FACTORIO_ICONS or the local factorio.app path)")
     args = ap.parse_args(argv)
 
     device = torch.device(args.device)
     model, vocab, ckpt = load_checkpoint(args.checkpoint, device)
+
+    sr = None
+    if args.sprites is not None:
+        sr = SpriteRenderer(None if args.sprites == "auto" else args.sprites)
+        if not sr.available:
+            print(f"[warn] icons dir not found ({sr.dir}); falling back to colored cells")
+            sr = None
+        else:
+            print(f"sprites: {sr.dir}  (entity icon coverage {sr.coverage(vocab):.0%})")
     payload = load_dataset(args.data if args.data else Path(ckpt["dataset"]))
     ds = make_datasets(payload)
     split = ds[args.split]
@@ -110,12 +123,13 @@ def main(argv=None) -> int:
             pred_full = y.copy()
             pred_full[m] = pred[m]
             acc = float((pred[m] == y[m]).mean())
-            panels = [
-                render_grid(xin, vocab, cell=args.cell, mask=m),
-                render_grid(y, vocab, cell=args.cell, mask=m),
-                render_grid(pred_full, vocab, cell=args.cell, mask=m),
-                render_diff(y, pred_full, m, cell=args.cell),
-            ]
+
+            def rg(g):
+                return sr.render_grid(g, vocab, cell=args.cell, mask=m) if sr \
+                    else render_grid(g, vocab, cell=args.cell, mask=m)
+
+            panels = [rg(xin), rg(y), rg(pred_full),
+                      render_diff(y, pred_full, m, cell=args.cell)]
             row = hconcat(panels, pad=10)
             label = _text_strip(row.width, f"example {rank + 1}  ·  masked-cell accuracy {acc:.0%}",
                                 26, size=16, bg=(245, 245, 245))
@@ -130,7 +144,7 @@ def main(argv=None) -> int:
     subtitle = _text_strip(panel_w, headline, 28, size=15, fg=(60, 60, 60))
 
     montage = vstack([title, subtitle, header, *rows], pad=12)
-    out_path = args.out / "montage.png"
+    out_path = args.out / ("montage_sprites.png" if sr else "montage.png")
     montage.save(out_path)
     # Also save the single best example big, for embedding.
     print(f"\nSaved demo montage -> {out_path}  ({montage.width}x{montage.height})")
