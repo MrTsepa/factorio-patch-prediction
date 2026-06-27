@@ -4,7 +4,11 @@ import zlib
 
 import pytest
 
-from factorio_patches.blueprint_decode import BlueprintDecodeError, decode_blueprint_string
+from factorio_patches.blueprint_decode import (
+    BlueprintDecodeError,
+    decode_blueprint_string,
+    encode_blueprint_string,
+)
 
 
 def encode_blueprint(obj: dict, version: str = "0") -> str:
@@ -63,3 +67,10 @@ def test_round_trip_with_version_byte_present():
     s = encode_blueprint(SAMPLE)
     assert s[0] == "0"
     assert decode_blueprint_string(s)["blueprint"]["entities"][0]["direction"] == 2
+
+
+def test_module_encode_decode_round_trip():
+    # The library encoder produces a string our decoder reads back identically.
+    s = encode_blueprint_string(SAMPLE)
+    assert isinstance(s, str) and s[0] == "0"
+    assert decode_blueprint_string(s) == SAMPLE

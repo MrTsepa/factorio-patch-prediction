@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .render import token_color
+from .render import DIR8, token_color
 from .vocab import EMPTY_ID, MASK_ID, UNK_ID, split_token
 
 # Factorio 1.1 (our blueprints) -> 2.0 base icon name renames.
@@ -61,8 +61,9 @@ SIZES = {
     "pump": (1, 2), "arithmetic-combinator": (1, 2), "decider-combinator": (1, 2),
     "fluid-wagon": (2, 6), "cargo-wagon": (2, 6), "locomotive": (2, 6),
 }
-# Entities whose icon should rotate with `direction` (others render upright).
-ROTATABLE = ("belt", "inserter", "splitter", "pump", "pipe-to-ground", "gate", "wall")
+# Directional entities get a consistent arrow overlay. (UI icons have no
+# canonical facing, so rotating the icon body itself is unreliable/inconsistent.)
+ARROW_ENTITIES = ("belt", "inserter", "splitter", "pump")
 
 DEFAULT_ICONS = "/Users/mrtsepa/Workspace/factorio.app/Contents/data/base/graphics/icons"
 
@@ -148,16 +149,25 @@ class SpriteRenderer:
 
         for _, r, c, tid, name, dir_, w, h in items:
             cx, cy = c * cell + cell / 2, r * cell + cell / 2
-            angle = 0
-            if draw_dirs and dir_ and any(k in name for k in ROTATABLE):
-                angle = (int(dir_) * 45) % 360
-            sp = None if tid == UNK_ID else self.sprite(name, w * cell, h * cell, angle)
+            sp = None if tid == UNK_ID else self.sprite(name, w * cell, h * cell, 0)
             if sp is not None:
                 img.paste(sp, (int(cx - sp.width / 2), int(cy - sp.height / 2)), sp)
             else:
                 col = token_color(vocab.decode(tid))
                 d.rectangle([cx - w * cell / 2 + 1, cy - h * cell / 2 + 1,
                              cx + w * cell / 2 - 2, cy + h * cell / 2 - 2], fill=col)
+            # Consistent direction arrow (icons aren't rotated — see ARROW_ENTITIES).
+            if draw_dirs and dir_ and cell >= 12 and any(k in name for k in ARROW_ENTITIES):
+                vx, vy = DIR8.get(int(dir_) % 8, (0, 0))
+                if vx or vy:
+                    L = cell * 0.40
+                    tip = (cx + vx * L, cy + vy * L)
+                    base = (cx + vx * L * 0.35, cy + vy * L * 0.35)
+                    perp = (-vy, vx)
+                    b = cell * 0.17
+                    d.polygon([tip, (base[0] + perp[0] * b, base[1] + perp[1] * b),
+                               (base[0] - perp[0] * b, base[1] - perp[1] * b)],
+                              fill=(20, 20, 20))
 
         # MASK on top so the hole reads cleanly even if a neighbour's footprint bleeds in.
         for r in range(H):

@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .blueprint_decode import encode_blueprint_string
 from .dataset import load_dataset, make_datasets
 from .metrics import evaluate, format_metrics, most_common_entity_id
 from .model import PatchInpaintUNet
@@ -26,10 +27,13 @@ def load_checkpoint(path: Path, device):
     return model, vocab, ckpt
 
 
-def grid_to_blueprint(grid: np.ndarray, vocab: Vocab) -> dict:
-    """EXPERIMENTAL: convert a predicted token grid back into a minimal blueprint dict.
+def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
+                      label: str = "predicted patch (factorio-patch-inpaint)") -> dict:
+    """Convert a token grid back into a minimal Factorio blueprint dict.
 
-    Not Factorio-perfect (anchors only, no collision/validity checks).
+    Anchors only (no multi-tile collision handling or validity checks), but the
+    structure is a real importable blueprint. Directions are the dataset's
+    native values (Factorio 1.1, 8-direction).
     """
     entities = []
     n = 0
@@ -49,8 +53,10 @@ def grid_to_blueprint(grid: np.ndarray, vocab: Vocab) -> dict:
             if direction:
                 ent["direction"] = int(direction)
             entities.append(ent)
-    return {"blueprint": {"item": "blueprint", "entities": entities, "version": 0,
-                          "label": "EXPERIMENTAL predicted patch"}}
+    # version is a valid Factorio 1.1 build number so the string imports cleanly.
+    return {"blueprint": {"item": "blueprint", "entities": entities,
+                          "version": 281479275151360,
+                          "label": label}}
 
 
 def run_demo(args) -> dict:
@@ -97,8 +103,12 @@ def run_demo(args) -> dict:
                    "prediction": pred_full.tolist(), "mask": mask.astype(int).tolist()}
             (grids_dir / f"{args.split}_{i:03d}.json").write_text(json.dumps(rec))
             if args.export_blueprint:
-                bp = grid_to_blueprint(pred_full, vocab)
-                (grids_dir / f"{args.split}_{i:03d}_blueprint.json").write_text(json.dumps(bp))
+                for tag, g in (("prediction", pred_full), ("target", y)):
+                    bp = grid_to_blueprint(g, vocab, label=f"{args.split}_{i:03d} {tag}")
+                    stem = grids_dir / f"{args.split}_{i:03d}_{tag}"
+                    bp_str = encode_blueprint_string(bp)
+                    stem.with_suffix(".blueprint.txt").write_text(bp_str)   # importable into Factorio
+                    stem.with_suffix(".blueprint.json").write_text(json.dumps(bp))
 
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(f"\nWrote {n} demo panel(s) + raw grids -> {out}")

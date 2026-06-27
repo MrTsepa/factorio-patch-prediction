@@ -71,6 +71,19 @@ def decode_blueprint_string(s: str) -> dict:
     return obj
 
 
+def encode_blueprint_string(obj: dict, version_byte: str = "0") -> str:
+    """Inverse of :func:`decode_blueprint_string`.
+
+    Serializes ``obj`` to a Factorio blueprint string (``<version>base64(zlib(json))``)
+    that can be pasted/imported into Factorio. Round-trips with
+    ``decode_blueprint_string``.
+    """
+    if not isinstance(obj, dict):
+        raise BlueprintDecodeError("can only encode a dict blueprint object")
+    raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    return version_byte + base64.b64encode(zlib.compress(raw, 9)).decode("ascii")
+
+
 def _iter_blueprint_txt(raw_root: Path):
     """Yield (source_hash, blueprint_txt_path, source_url, info_path) under raw_root."""
     for bp_path in sorted(raw_root.rglob("blueprint.txt")):

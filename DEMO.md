@@ -49,7 +49,32 @@ Full prediction galleries (input/target/prediction/diff per example) are written
 to `outputs/demo_predictions/`. See [README.md](README.md) for the end-to-end
 pipeline and [docs/findings.md](docs/findings.md) for the full write-up.
 
-## Optional: render with real Factorio sprites
+## Render with **authentic** Factorio graphics (import the prediction)
+
+The most faithful way to see the output in real graphics is to turn the
+prediction back into an actual **Factorio blueprint string** and render it the way
+blueprints normally are — in-game (Import string → preview) or any blueprint tool.
+
+```bash
+uv run python -m factorio_patches.eval --checkpoint runs/poc_001/best.pt \
+  --out outputs/demo_predictions --split test --num 20 --export-blueprint
+```
+
+For each example this writes, under `outputs/demo_predictions/grids/`:
+
+- `*_prediction.blueprint.txt` — the model's filled-in grid as a real, importable
+  blueprint string (`0eN…`);
+- `*_target.blueprint.txt` — the ground-truth crop, for side-by-side comparison;
+- plus `.blueprint.json` versions.
+
+Paste a `.blueprint.txt` into Factorio (or factorio.school / any renderer) to view it
+with true entity sprites, footprints, and rotations. The encoder
+(`blueprint_decode.encode_blueprint_string`) round-trips with the decoder and is
+unit-tested. v0 caveat: anchors only, native 1.1 (8-direction) values, and
+underground belts have no input/output pairing — so a few entities may need a nudge
+in-editor, but the layout imports and renders.
+
+## Optional: render with real Factorio sprites (in-repo, approximate)
 
 The same demo can be rendered with the **actual base-game entity icons** instead of
 colored cells (`src/factorio_patches/sprites.py`). The icons are Wube's copyrighted
