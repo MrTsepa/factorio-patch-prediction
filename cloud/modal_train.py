@@ -26,8 +26,10 @@ image = (
 vol = modal.Volume.from_name("factorio-runs", create_if_missing=True)
 
 # old vs new, same data. d_model differs by arch; lr tuned per arch.
+# patch=2 transformer (1024 tokens) is memory-heavy: batch 64 fits A10G (24GB) with
+# bf16 AMP; the U-Net is light so it gets a bigger batch.
 CONFIGS = [
-    ("unet", "unet-d96", dict(d_model=96, lr=2e-3, batch_size=64)),
+    ("unet", "unet-d96", dict(d_model=96, lr=2e-3, batch_size=128)),
     ("transformer", "tf-p2-d256",
      dict(d_model=256, depth=8, heads=8, patch=2, lr=1e-3, batch_size=64)),
 ]
@@ -54,7 +56,7 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int):
         d_model=hp.get("d_model", 256), depth=hp.get("depth", 8),
         heads=hp.get("heads", 8), patch=hp.get("patch", 2),
         train_samples=samples, val_samples=1024,
-        num_workers=2, device="auto", seed=0,
+        num_workers=2, device="auto", seed=0, amp="auto", compile=True,
         wandb="factorio-patch-inpaint", run_name=run_name)
     summary = train(args)
     vol.commit()

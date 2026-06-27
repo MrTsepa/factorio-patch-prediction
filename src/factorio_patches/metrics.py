@@ -120,7 +120,9 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None) ->
         x = batch["x"].to(device)
         y = batch["y"].to(device)
         mask = batch["mask"].to(device)
-        logits = model(x)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                            enabled=(device.type == "cuda")):
+            logits = model(x)
         preds = logits.argmax(dim=1)
         k = min(topk, logits.shape[1])
         topk_idx = logits.topk(k=k, dim=1).indices

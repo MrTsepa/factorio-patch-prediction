@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch._dynamo  # noqa: F401  (so torch._dynamo.config is reachable for --compile)
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -127,6 +128,22 @@ def train(args) -> dict:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.epochs, eta_min=args.lr * 0.05)
 
+    # bf16 autocast (Tensor Cores) + torch.compile speed up the GPU forward a lot,
+    # especially the transformer's attention; no-ops on CPU/MPS. Keep the original
+    # `model` for checkpoints/eval; compile only the training-forward `fwd` (shares
+    # params, but avoids the compiled state_dict's "_orig_mod." key prefix).
+    use_amp = args.amp == "on" or (args.amp == "auto" and device.type == "cuda")
+    fwd = model
+    if args.compile and device.type == "cuda":
+        try:
+            torch._dynamo.config.suppress_errors = True  # fall back to eager, never crash
+            fwd = torch.compile(model)
+            print("torch.compile: enabled")
+        except Exception as e:  # pragma: no cover - environment dependent
+            print(f"[warn] torch.compile failed ({e}); continuing uncompiled")
+    if use_amp:
+        print(f"AMP: bfloat16 autocast on {device.type}")
+
     # Down-weight EMPTY in the loss to fight the heavy class imbalance.
     class_weight = torch.ones(len(vocab), device=device)
     class_weight[EMPTY_ID] = args.empty_weight
@@ -158,8 +175,9 @@ def train(args) -> dict:
             x = batch["x"].to(device)
             y = batch["y"].to(device)
             mask = batch["mask"].to(device)
-            logits = model(x)
-            loss = masked_ce_loss(logits, y, mask, weight=class_weight)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+                logits = fwd(x)
+                loss = masked_ce_loss(logits, y, mask, weight=class_weight)
             opt.zero_grad()
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -192,9 +210,11 @@ def train(args) -> dict:
                    "train/samples_per_sec": samples_per_sec}
             log.update({f"val/{k}": v for k, v in val_metrics["model"].items()
                         if isinstance(v, (int, float))})
-            log.update({f"val_baseline/{k}": v for k, v in
-                        val_metrics["baseline_majority_entity"].items()
-                        if k in ("entity_token_acc", "non_empty_f1")})
+            md_, bm_ = val_metrics["model"], val_metrics["baseline_majority_entity"]
+            log.update({f"val_baseline/{k}": bm_[k] for k in ("entity_token_acc", "non_empty_f1")})
+            # rising "lift over majority baseline" is more informative than the flat line
+            log["val/entity_acc_lift"] = md_["entity_token_acc"] - bm_["entity_token_acc"]
+            log["val/f1_lift"] = md_["non_empty_f1"] - bm_["non_empty_f1"]
             if epoch % max(1, args.epochs // 5) == 0 or epoch == args.epochs:
                 log["val/predictions"] = wandb.Image(_pred_panel(model, ds["val"], vocab, device))
             run.log(log)
@@ -257,6 +277,9 @@ def main(argv=None) -> int:
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--wandb", default=None, help="wandb project to log to (disabled if unset)")
     ap.add_argument("--run-name", default=None, help="wandb run name")
+    ap.add_argument("--amp", choices=["auto", "on", "off"], default="auto",
+                    help="bfloat16 autocast (auto = on for CUDA)")
+    ap.add_argument("--compile", action="store_true", help="torch.compile the model (CUDA)")
     ap.add_argument("--empty-weight", type=float, default=0.2,
                     help="loss weight for the EMPTY class (down-weight to fight imbalance)")
     ap.add_argument("--arch", choices=["unet", "transformer"], default="unet")
