@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from .dataset import build_dataset, load_dataset, make_datasets
 from .metrics import evaluate, format_metrics, masked_ce_loss, most_common_entity_id
-from .model import PatchInpaintUNet
+from .model import build_model
 from .render import render_prediction_set
 from .vocab import EMPTY_ID, Vocab
 
@@ -94,9 +94,10 @@ def train(args) -> dict:
     test_loader = DataLoader(ds["test"], batch_size=args.batch_size, shuffle=False,
                              num_workers=args.num_workers) if ds["test"] else None
 
-    model = PatchInpaintUNet(len(vocab), d_model=args.d_model).to(device)
-    print(f"model params: {model.num_params():,}")
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    model = build_model(args.arch, len(vocab), d_model=args.d_model,
+                        depth=args.depth, heads=args.heads, patch=args.patch).to(device)
+    print(f"arch={args.arch} model params: {model.num_params():,}")
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.epochs, eta_min=args.lr * 0.05)
 
@@ -145,7 +146,9 @@ def train(args) -> dict:
         # checkpoints
         ckpt = {"model_state": model.state_dict(), "vocab_tokens": vocab.itos,
                 "config": {"crop_size": cfg["crop_size"], "mask_size": cfg["mask_size"],
-                           "d_model": args.d_model}, "epoch": epoch,
+                           "arch": args.arch, "d_model": args.d_model,
+                           "depth": args.depth, "heads": args.heads, "patch": args.patch},
+                "epoch": epoch,
                 "val_metrics": val_metrics, "prior_id": prior_id, "dataset": str(ds_path)}
         torch.save(ckpt, out / "last.pt")
         crit = val_metrics["model"]["entity_token_acc"] if val_metrics else -1.0
@@ -189,9 +192,14 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-3)
+    ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--empty-weight", type=float, default=0.2,
                     help="loss weight for the EMPTY class (down-weight to fight imbalance)")
+    ap.add_argument("--arch", choices=["unet", "transformer"], default="unet")
     ap.add_argument("--d-model", type=int, default=64)
+    ap.add_argument("--depth", type=int, default=6, help="transformer encoder layers")
+    ap.add_argument("--heads", type=int, default=6, help="transformer attention heads")
+    ap.add_argument("--patch", type=int, default=2, help="transformer patchify stride (power of 2)")
     ap.add_argument("--train-samples", type=int, default=4000, help="patches sampled per epoch")
     ap.add_argument("--val-samples", type=int, default=1000)
     ap.add_argument("--num-workers", type=int, default=0)

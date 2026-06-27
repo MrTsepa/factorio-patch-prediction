@@ -12,7 +12,7 @@ import torch
 from .blueprint_decode import encode_blueprint_string
 from .dataset import load_dataset, make_datasets
 from .metrics import evaluate, format_metrics, most_common_entity_id
-from .model import PatchInpaintUNet
+from .model import build_model
 from .render import render_prediction_set
 from .vocab import EMPTY_ID, MASK_ID, Vocab, split_token
 from torch.utils.data import DataLoader
@@ -21,19 +21,29 @@ from torch.utils.data import DataLoader
 def load_checkpoint(path: Path, device):
     ckpt = torch.load(path, weights_only=False)
     vocab = Vocab(ckpt["vocab_tokens"])
-    model = PatchInpaintUNet(len(vocab), d_model=ckpt["config"]["d_model"]).to(device)
+    cfg = ckpt["config"]
+    model = build_model(cfg.get("arch", "unet"), len(vocab), d_model=cfg["d_model"],
+                        depth=cfg.get("depth", 6), heads=cfg.get("heads", 6),
+                        patch=cfg.get("patch", 2)).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     return model, vocab, ckpt
 
 
+# Factorio build numbers ((major<<48)|(minor<<32)|(patch<<16)|dev).
+VERSION_1_1 = 281479275151360   # 1.1.x  (8-direction)
+VERSION_2_0 = 562949953421312   # 2.0.x  (16-direction)
+
+
 def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
-                      label: str = "predicted patch (factorio-patch-inpaint)") -> dict:
+                      label: str = "predicted patch (factorio-patch-inpaint)",
+                      version: int = VERSION_1_1) -> dict:
     """Convert a token grid back into a minimal Factorio blueprint dict.
 
     Anchors only (no multi-tile collision handling or validity checks), but the
-    structure is a real importable blueprint. Directions are the dataset's
-    native values (Factorio 1.1, 8-direction).
+    structure is a real importable blueprint. ``version`` MUST match the grid's
+    direction encoding: a 2.0-native grid (16-direction names/dirs) needs
+    ``VERSION_2_0`` so the game/FBSR doesn't re-migrate (and corrupt) directions.
     """
     entities = []
     n = 0
@@ -53,10 +63,8 @@ def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
             if direction:
                 ent["direction"] = int(direction)
             entities.append(ent)
-    # version is a valid Factorio 1.1 build number so the string imports cleanly.
     return {"blueprint": {"item": "blueprint", "entities": entities,
-                          "version": 281479275151360,
-                          "label": label}}
+                          "version": version, "label": label}}
 
 
 def run_demo(args) -> dict:

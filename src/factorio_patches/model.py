@@ -77,3 +77,66 @@ class PatchInpaintUNet(nn.Module):
 
     def num_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+
+class PatchInpaintTransformer(nn.Module):
+    """ViT-style transformer for patch inpainting.
+
+    Token embedding -> conv 'patchify' stem (64 -> 64/patch) -> learned 2D
+    positional embedding -> transformer encoder (global self-attention over the
+    patch tokens) -> conv decoder that upsamples back to full resolution, fused
+    with a full-res embedding skip so fine local detail survives.
+    Input  : [B, H, W] long ;  Output : [B, V, H, W] logits.
+    """
+
+    def __init__(self, vocab_size: int, d_model: int = 192, patch: int = 2,
+                 depth: int = 6, heads: int = 6, d_embed: int = 64, grid: int = 64):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.patch = patch
+        n = grid // patch
+        self.embed = nn.Embedding(vocab_size, d_embed)
+        self.stem = nn.Conv2d(d_embed, d_model, patch, stride=patch)   # grid -> grid/patch
+        self.pos = nn.Parameter(torch.randn(1, n * n, d_model) * 0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model, heads, dim_feedforward=4 * d_model, batch_first=True,
+            activation="gelu", norm_first=True, dropout=0.1)
+        self.encoder = nn.TransformerEncoder(layer, depth)
+        self.norm = nn.LayerNorm(d_model)
+
+        c1, c2 = d_model // 2, d_model // 4
+        ups = []
+        cin = d_model
+        for _ in range(patch.bit_length() - 1):           # log2(patch) upsample x2 blocks
+            cout = max(c2, cin // 2)
+            ups += [nn.ConvTranspose2d(cin, cout, 2, stride=2),
+                    _norm(cout), nn.GELU()]
+            cin = cout
+        self.up = nn.Sequential(*ups)
+        self.fuse = nn.Sequential(nn.Conv2d(cin + d_embed, cin, 3, padding=1),
+                                  _norm(cin), nn.GELU())
+        self.head = nn.Conv2d(cin, vocab_size, 1)
+
+    def forward(self, x):                      # x: [B, H, W] long
+        e = self.embed(x).permute(0, 3, 1, 2)  # [B, d_embed, H, W]
+        t = self.stem(e)                       # [B, D, H/p, W/p]
+        B, D, h, w = t.shape
+        seq = t.flatten(2).transpose(1, 2) + self.pos   # [B, h*w, D]
+        seq = self.norm(self.encoder(seq))
+        t = seq.transpose(1, 2).reshape(B, D, h, w)
+        u = self.up(t)                         # [B, c, H, W]
+        u = self.fuse(torch.cat([u, e], dim=1))
+        return self.head(u)                    # [B, V, H, W]
+
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+
+def build_model(arch: str, vocab_size: int, d_model: int = 64, depth: int = 6,
+                heads: int = 6, patch: int = 2):
+    if arch == "unet":
+        return PatchInpaintUNet(vocab_size, d_model=d_model)
+    if arch == "transformer":
+        return PatchInpaintTransformer(vocab_size, d_model=d_model, patch=patch,
+                                       depth=depth, heads=heads)
+    raise ValueError(f"unknown arch: {arch}")
