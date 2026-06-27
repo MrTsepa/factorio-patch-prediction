@@ -91,13 +91,31 @@ class MaskedCounts:
         return out
 
 
+def io_of_ids(vocab):
+    """Map each vocab id -> 0 (no io), 1 (input), 2 (output), from the token suffix."""
+    from .vocab import parse_name_io, split_token
+    arr = np.zeros(len(vocab), dtype=np.int64)
+    for i, tok in enumerate(vocab.itos):
+        name, _ = split_token(tok)
+        _, io = parse_name_io(name)
+        arr[i] = 1 if io == "input" else (2 if io == "output" else 0)
+    return arr
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, prior_id: int, topk: int = 5) -> dict:
-    """Run model over loader and return model + baseline metrics on identical patches."""
+def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None) -> dict:
+    """Run model over loader and return model + baseline metrics on identical patches.
+
+    If ``vocab`` is given, also reports underground/loader input/output accuracy
+    (``io_acc``): among masked cells whose target is an io-tagged entity, the
+    fraction where the predicted token's input/output matches.
+    """
     model.eval()
     acc_model = MaskedCounts()
     acc_empty = MaskedCounts()
     acc_prior = MaskedCounts()
+    io_arr = torch.tensor(io_of_ids(vocab), device=device) if vocab is not None else None
+    n_io_target = n_io_correct = 0
     for batch in loader:
         x = batch["x"].to(device)
         y = batch["y"].to(device)
@@ -109,11 +127,20 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5) -> dict:
         acc_model.update(preds, y, mask, topk_idx=topk_idx)
         acc_empty.update(torch.full_like(y, EMPTY_ID), y, mask)
         acc_prior.update(torch.full_like(y, prior_id), y, mask)
-    return {
+        if io_arr is not None:
+            t_io, p_io = io_arr[y[mask]], io_arr[preds[mask]]
+            tgt = t_io != 0
+            n_io_target += int(tgt.sum())
+            n_io_correct += int(((p_io == t_io) & tgt).sum())
+    res = {
         "model": acc_model.metrics(with_topk=True),
         "baseline_empty": acc_empty.metrics(),
         "baseline_majority_entity": acc_prior.metrics(),
     }
+    if io_arr is not None:
+        res["model"]["io_acc"] = (n_io_correct / n_io_target) if n_io_target else 0.0
+        res["model"]["io_cells"] = n_io_target
+    return res
 
 
 def format_metrics(split: str, m: dict) -> str:
@@ -124,6 +151,7 @@ def format_metrics(split: str, m: dict) -> str:
         f"[{split}] model        : masked_acc={md['masked_acc']:.3f} "
         f"nonempty_f1={md['non_empty_f1']:.3f} exact_f1={md['non_empty_exact_f1']:.3f} "
         f"entity_acc={md['entity_token_acc']:.3f} top5={md.get('top5_acc', 0):.3f} "
+        f"io_acc={md.get('io_acc', float('nan')):.3f} "
         f"(P={md['non_empty_precision']:.3f} R={md['non_empty_recall']:.3f})",
         f"[{split}] base(empty)  : masked_acc={be['masked_acc']:.3f} nonempty_f1={be['non_empty_f1']:.3f} "
         f"entity_acc={be['entity_token_acc']:.3f}",

@@ -68,6 +68,32 @@ def render_epoch_samples(model, val_ds, vocab, device, out_dir: Path, n: int = 6
             render_prediction_set(xin, y, pred_full, mask, vocab, out_dir, f"val_{i:02d}")
 
 
+def _pred_panel(model, val_ds, vocab, device, n=4):
+    """A stacked input|target|prediction|diff panel of n val examples, for wandb."""
+    from PIL import Image
+
+    from .render import hconcat, render_diff, render_grid
+    rows = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(min(n, len(val_ds))):
+            s = val_ds[i]
+            pred = model(s["x"].unsqueeze(0).to(device)).argmax(dim=1)[0].cpu().numpy()
+            y, m, xin = s["y"].numpy(), s["mask"].numpy(), s["x"].numpy()
+            pf = y.copy(); pf[m] = pred[m]
+            rows.append(hconcat([render_grid(xin, vocab, cell=8, mask=m),
+                                 render_grid(y, vocab, cell=8, mask=m),
+                                 render_grid(pf, vocab, cell=8, mask=m),
+                                 render_diff(y, pf, m, cell=8)]))
+    w = max(r.width for r in rows)
+    h = sum(r.height for r in rows) + 6 * (len(rows) - 1)
+    out = Image.new("RGB", (w, h), (20, 20, 22))
+    yo = 0
+    for r in rows:
+        out.paste(r, (0, yo)); yo += r.height + 6
+    return out
+
+
 def train(args) -> dict:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -124,6 +150,7 @@ def train(args) -> dict:
     for epoch in range(1, args.epochs + 1):
         model.train()
         running = 0.0
+        running_gn = 0.0
         nb = 0
         t0 = time.time()
         pbar = tqdm(train_loader, desc=f"epoch {epoch}/{args.epochs}", leave=False)
@@ -135,14 +162,19 @@ def train(args) -> dict:
             loss = masked_ce_loss(logits, y, mask, weight=class_weight)
             opt.zero_grad()
             loss.backward()
+            gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             running += loss.item()
+            running_gn += float(gn)
             nb += 1
             pbar.set_postfix(loss=f"{running / nb:.3f}")
         train_loss = running / max(nb, 1)
+        grad_norm = running_gn / max(nb, 1)
+        train_dt = time.time() - t0
+        samples_per_sec = (nb * args.batch_size) / max(train_dt, 1e-6)
         sched.step()
 
-        val_metrics = evaluate(model, val_loader, device, prior_id) if val_loader else None
+        val_metrics = evaluate(model, val_loader, device, prior_id, vocab=vocab) if val_loader else None
         dt = time.time() - t0
         rec = {"epoch": epoch, "train_loss": train_loss, "seconds": round(dt, 1),
                "val": val_metrics}
@@ -154,9 +186,18 @@ def train(args) -> dict:
         if val_metrics:
             print(format_metrics("val", val_metrics))
         if run and val_metrics:
-            run.log({"epoch": epoch, "train_loss": train_loss, "lr": sched.get_last_lr()[0],
-                     **{f"val/{k}": v for k, v in val_metrics["model"].items()
-                        if isinstance(v, (int, float))}})
+            import wandb
+            log = {"epoch": epoch, "train/loss": train_loss, "train/lr": sched.get_last_lr()[0],
+                   "train/grad_norm": grad_norm, "train/epoch_time_s": train_dt,
+                   "train/samples_per_sec": samples_per_sec}
+            log.update({f"val/{k}": v for k, v in val_metrics["model"].items()
+                        if isinstance(v, (int, float))})
+            log.update({f"val_baseline/{k}": v for k, v in
+                        val_metrics["baseline_majority_entity"].items()
+                        if k in ("entity_token_acc", "non_empty_f1")})
+            if epoch % max(1, args.epochs // 5) == 0 or epoch == args.epochs:
+                log["val/predictions"] = wandb.Image(_pred_panel(model, ds["val"], vocab, device))
+            run.log(log)
 
         # checkpoints
         ckpt = {"model_state": model.state_dict(), "vocab_tokens": vocab.itos,
@@ -187,7 +228,7 @@ def train(args) -> dict:
             summary["best_epoch"] = best["epoch"]
         else:
             print("\n[warn] no best.pt (no validation split?); evaluating test with last model")
-        test_metrics = evaluate(model, test_loader, device, prior_id)
+        test_metrics = evaluate(model, test_loader, device, prior_id, vocab=vocab)
         print("\n=== TEST (best checkpoint) ===")
         print(format_metrics("test", test_metrics))
         summary["test"] = test_metrics
