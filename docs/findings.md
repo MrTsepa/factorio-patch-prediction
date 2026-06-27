@@ -137,33 +137,44 @@ where Factorio layouts are most regular.
 - **GitHub** raw `.txt` blueprint-string collections (file body *is* the `0eNq…`
   string).
 
-## Game-accurate rendering (how FactorioBin-style images are made)
+## Game-accurate rendering with FBSR (+ a self-validating harness)
 
-FactorioBin/Reddit's BlueprintBot pre-render blueprints server-side with the Java
-**FBSR** engine (real sprites from a Factorio install). For this repo we get the
-same kind of game-accurate output **locally and offline** by exporting the
-prediction as a blueprint string and rendering it with the sibling
-**factorio-learning-environment (FLE)** Python renderer (`scripts/render_fle.py`).
+FactorioBin and Reddit's BlueprintBot render blueprints server-side with the Java
+**FBSR** engine (`github.com/demodude4u/Factorio-FBSR`), using real sprites dumped
+from a Factorio install. We run the **same engine locally** and validate our output
+against FactorioBin's own reference images.
 
-Non-obvious bits that made it work (the earlier "blank render" trap):
+**FBSR setup (one-time)** — see `scripts/fbsr.sh` / `scripts/fbsr_service.sh`:
+- JDK 21 + Maven; build the two unpublished deps (`demodude4u/Java-Factorio-Data-Wrapper`,
+  `demodude4u/Discord-Core-Bot-Apple`) into `~/.m2`, then `mvn package` FBSR.
+- **Apple-Silicon fix:** FBSR bundles the x86_64-only `org.sejda:webp-imageio:0.1.6`;
+  the bake (and reads) fail with `UnsatisfiedLinkError`. Swap in the arm64 fork
+  `com.github.usefulness:webp-imageio:0.11.0` (same `com.luciad.imageio.webp` API) +
+  add `kotlin-stdlib` (the fork is Kotlin). `scripts/fbsr.sh` does this automatically.
+- Point it at the install and bake: `cfg-factorio -install=<app>/Contents -auto-find-exec`
+  (config stores `executable` **relative** to install → set it to `MacOS/factorio`);
+  then `profile-default-vanilla -f` and `build -a` (runs Factorio headless to dump
+  `data-raw` and packs sprite atlases). Render via a warm `bot-run` RPC service.
+- FBSR renders raw 1.1 **and** 2.0 strings directly (auto-migrates) — no manual
+  version conversion needed for rendering.
 
-- FLE's render-time `.fle/sprites` ships **icons only** — no entity bodies. The
-  bodies must be generated from `.fle/spritemaps` (`.basis` textures). The external
-  `basisu` transcoder isn't installed, but a **pre-transcoded PNG cache** exists in
-  `.fle/spritemaps/cache` keyed to the *original author's absolute path*; relink it
-  to this machine's path, then run `fle.agents.data.sprites.download.generate_sprites(
-  input_dir=ABS/.fle/spritemaps, output_dir=ABS/.fle/sprites)` (pass ABSOLUTE paths,
-  or the cache key misses). This grows `.fle/sprites` from ~1802 → ~2176 files.
-- FLE's per-entity renderers hardcode Factorio **2.0** direction tables
-  (`{0,4,8,12}`) but the engine yields **1.1** values (`0/2/4/6`) → `KeyError`;
-  `render_fle.py` patches every renderer's `DIRECTIONS`/`RELATIVE_DIRECTIONS` to 1.1.
-- `_render_rails` assumes Entity objects → crashes on dict entities (drop rails);
-  the belt renderer reads `underground-belt['type']` (default it to `input`).
-- `ImageResolver` ignores its path arg → set `FLE_SPRITES_DIR`.
+**Validation harness** (`scripts/render_eval.py`): samples FactorioBin nodes that
+expose a `renderImageUrl`, renders each string with FBSR, then crop-to-content +
+scale-search + sub-pixel aligns our render to the reference and scores it
+(blurred **SSIM**, **pixel-match %**, and an **error-area %** with localized error
+boxes). Run: `uv run python scripts/render_eval.py --sample --posts balancers 1o4z16 --num 6`.
 
-Result: belt lanes, inserters, poles, chests and machines render with true sprites
-(see the local `docs/demo/hero_factorio.png`). Alternatively, paste an exported
-`*.blueprint.txt` straight into Factorio for a perfect in-game render.
+**Results** (our FBSR vs FactorioBin reference): base-2.0 blueprints match
+essentially pixel-for-pixel — e.g. 2.0.72 starters score **SSIM ≈ 0.87, 97%
+pixel-match, ~0% error-area**. The harness correctly localizes the one real gap:
+this install is **base-2.0 (no Space Age DLC)**, so Space-Age entities (turbo belts,
+etc.) render as `?` and light up as error regions (the diagnostic working as
+intended). Installing the Space Age DLC + baking an SA profile would close that.
+
+(A pure-Python fallback renderer via the **FLE** sibling repo also exists
+(`scripts/render_fle.py`); FBSR is higher fidelity and is the recommended path.)
+Alternatively, paste an exported `*.blueprint.txt` straight into Factorio for a
+perfect in-game render.
 
 ## Reproduce
 

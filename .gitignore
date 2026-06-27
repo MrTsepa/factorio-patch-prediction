@@ -20,3 +20,9 @@ docs/demo/*sprites*.png
 docs/demo/hero_sprites.png
 docs/demo/*factorio*.png
 assets/
+
+# Render-validation harness outputs: downloaded FactorioBin reference images +
+# FBSR renders (both embed Wube's copyrighted graphics). Code is tracked; data isn't.
+eval_render/
+data/decoded20/
+data/raw/fbin20/
