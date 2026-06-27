@@ -1,0 +1,36 @@
+# FactorioBin seed URLs for the patch-inpainting POC.
+# One post URL per line; blank lines and lines starting with '#' are ignored.
+# A book post's root string encodes the whole book, so each line below expands
+# into many individual blueprints during extraction.
+#
+# These were discovered (not brute-forced) via web search + FactorioBin's API
+# and verified live. The primary set below is intentionally all Factorio 1.1
+# (8-direction encoding) and belt/logistics-heavy, so direction tokens and
+# entity families are consistent for a clean first experiment.
+
+# --- Belt / balancer books (pure belts, undergrounds, splitters) ---
+https://factoriobin.com/post/balancers      # Raynquist's Belt Balancer Book (Spring 2022), 1.1.57
+https://factoriobin.com/post/dvnwej         # balancer book (fall 2024), 1.1.110
+https://factoriobin.com/post/KafN8H7L       # Belt Balancers, 1.1.53
+
+# --- Full-factory / base books (diverse logistics, assemblers, smelting) ---
+https://factoriobin.com/post/Y52EhJ74       # Nilaus Master Class - all blueprints, 1.1.34
+https://factoriobin.com/post/qg7tCyzw       # Base-In-A-Book Stage 2 Complete - Nilaus, 1.1.34
+https://factoriobin.com/post/yRHQb4BZ       # Megabase-In-A-Book Episode #15, 1.1.39
+https://factoriobin.com/post/9hekKKyP       # Megabase-In-A-Book Episode #22, 1.1.42
+https://factoriobin.com/post/1n7wiSjS       # Megabase-In-A-Book Episode #30, 1.1.46
+https://factoriobin.com/post/eyH-kpJJ       # Megabase-In-A-Book Episode #75, 1.1.57
+https://factoriobin.com/post/Aa1QjvEO       # "Bock" big book for Reddit, 1.1.101
+
+# --- More available (uncomment for more data) -----------------------------
+# https://factoriobin.com/post/CmbnZj4m     # Vanilla Megabase Blocks 1 (rail-heavy), 1.1.104
+# https://factoriobin.com/post/NWd0E1pq     # Vanilla Megabase RailBlock (rail-heavy), 1.1.104
+# https://factoriobin.com/post/bD3DtmqS     # Train blocks, 1.1.80
+# https://factoriobin.com/post/demo         # FactorioBin example book (tiny), 1.0.0
+#
+# --- Factorio 2.0 / Space Age books (16-direction encoding; different
+#     entities + direction values, so keep separate from the 1.1 set above) --
+# https://factoriobin.com/post/avztod       # Base-In-A-Book Space Age 0.2, 2.0.15
+# https://factoriobin.com/post/s5jnm4       # Nilaus Space Age Episode #62, 2.0.28
+# https://factoriobin.com/post/1o4z16       # Coffeemug Space Age Blueprints, 2.0.72
+# https://factoriobin.com/post/3vpk1k       # RedRum's Great Big Book of Everything, 2.0.11

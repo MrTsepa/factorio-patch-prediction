@@ -1,0 +1,16 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# Regenerated inside the container (keep the image small / reproducible).
+data/raw/
+data/decoded/
+data/processed/
+runs/
+outputs/
+cloud_out/
+docs/
