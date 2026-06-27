@@ -105,6 +105,17 @@ def train(args) -> dict:
     class_weight = torch.ones(len(vocab), device=device)
     class_weight[EMPTY_ID] = args.empty_weight
 
+    run = None
+    if args.wandb:
+        import wandb
+        run = wandb.init(project=args.wandb, name=args.run_name, config={
+            "arch": args.arch, "d_model": args.d_model, "depth": args.depth,
+            "heads": args.heads, "patch": args.patch, "params": model.num_params(),
+            "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+            "weight_decay": args.weight_decay, "empty_weight": args.empty_weight,
+            "crop": cfg["crop_size"], "mask": cfg["mask_size"], "vocab": len(vocab),
+            "train_blueprints": len(payload["splits"]["train"]), "dataset": str(ds_path)})
+
     history = []
     best_metric = -1.0
     metrics_path = out / "metrics.jsonl"
@@ -142,6 +153,10 @@ def train(args) -> dict:
         print(f"\nepoch {epoch}/{args.epochs}  train_loss={train_loss:.4f}  ({dt:.1f}s)")
         if val_metrics:
             print(format_metrics("val", val_metrics))
+        if run and val_metrics:
+            run.log({"epoch": epoch, "train_loss": train_loss, "lr": sched.get_last_lr()[0],
+                     **{f"val/{k}": v for k, v in val_metrics["model"].items()
+                        if isinstance(v, (int, float))}})
 
         # checkpoints
         ckpt = {"model_state": model.state_dict(), "vocab_tokens": vocab.itos,
@@ -176,7 +191,13 @@ def train(args) -> dict:
         print("\n=== TEST (best checkpoint) ===")
         print(format_metrics("test", test_metrics))
         summary["test"] = test_metrics
+        if run:
+            run.log({f"test/{k}": v for k, v in test_metrics["model"].items()
+                     if isinstance(v, (int, float))})
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    if run:
+        run.summary.update({"best_val_entity_token_acc": best_metric})
+        run.finish()
     print(f"\nSaved checkpoints + metrics to {out}")
     return summary
 
@@ -193,6 +214,8 @@ def main(argv=None) -> int:
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
+    ap.add_argument("--wandb", default=None, help="wandb project to log to (disabled if unset)")
+    ap.add_argument("--run-name", default=None, help="wandb run name")
     ap.add_argument("--empty-weight", type=float, default=0.2,
                     help="loss weight for the EMPTY class (down-weight to fight imbalance)")
     ap.add_argument("--arch", choices=["unet", "transformer"], default="unet")
