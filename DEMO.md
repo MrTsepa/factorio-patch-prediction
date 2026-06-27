@@ -74,7 +74,34 @@ unit-tested. v0 caveat: anchors only, native 1.1 (8-direction) values, and
 underground belts have no input/output pairing — so a few entities may need a nudge
 in-editor, but the layout imports and renders.
 
-## Optional: render with real Factorio sprites (in-repo, approximate)
+## Game-accurate rendering (real entity sprites) via FLE
+
+For programmatic **game-like** images (real sprites, footprints, rotations,
+shadows — the way FactorioBin / the Reddit BlueprintBot render, which use the Java
+FBSR engine), this repo bridges to the **factorio-learning-environment (FLE)**
+pure-Python renderer. `scripts/render_fle.py` takes one of the exported blueprint
+strings and produces a PNG. It runs in **FLE's** interpreter (it imports `fle`),
+not this project's venv.
+
+One-time setup (offline — no game, no internet): FLE ships its render-time sprite
+set incomplete (icons only); generate the entity bodies from FLE's local
+`.fle/spritemaps` (relinking its pre-transcoded sprite cache to your machine's path
+so the external `basisu` transcoder isn't needed). Then:
+
+```bash
+export FLE=/path/to/factorio-learning-environment
+FLE_SPRITES_DIR=$FLE/.fle/sprites \
+  $FLE/.venv/bin/python scripts/render_fle.py \
+    outputs/demo_predictions/grids/test_001_prediction.blueprint.txt out.png --scale 32
+```
+
+The script patches FLE's renderers at runtime for our Factorio-1.1 (8-direction)
+blueprints (FLE hardcodes 2.0 direction tables and has a couple of dict-vs-object
+bugs), drops rail-family entities, and defaults underground belts to `type=input`.
+Exact setup commands + the diagnosis are in `docs/findings.md`. Output images embed
+Factorio's copyrighted sprites, so they are kept local (gitignored), not committed.
+
+## Optional: render with real Factorio sprites (in-repo, approximate icons)
 
 The same demo can be rendered with the **actual base-game entity icons** instead of
 colored cells (`src/factorio_patches/sprites.py`). The icons are Wube's copyrighted

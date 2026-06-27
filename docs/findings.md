@@ -137,6 +137,34 @@ where Factorio layouts are most regular.
 - **GitHub** raw `.txt` blueprint-string collections (file body *is* the `0eNq…`
   string).
 
+## Game-accurate rendering (how FactorioBin-style images are made)
+
+FactorioBin/Reddit's BlueprintBot pre-render blueprints server-side with the Java
+**FBSR** engine (real sprites from a Factorio install). For this repo we get the
+same kind of game-accurate output **locally and offline** by exporting the
+prediction as a blueprint string and rendering it with the sibling
+**factorio-learning-environment (FLE)** Python renderer (`scripts/render_fle.py`).
+
+Non-obvious bits that made it work (the earlier "blank render" trap):
+
+- FLE's render-time `.fle/sprites` ships **icons only** — no entity bodies. The
+  bodies must be generated from `.fle/spritemaps` (`.basis` textures). The external
+  `basisu` transcoder isn't installed, but a **pre-transcoded PNG cache** exists in
+  `.fle/spritemaps/cache` keyed to the *original author's absolute path*; relink it
+  to this machine's path, then run `fle.agents.data.sprites.download.generate_sprites(
+  input_dir=ABS/.fle/spritemaps, output_dir=ABS/.fle/sprites)` (pass ABSOLUTE paths,
+  or the cache key misses). This grows `.fle/sprites` from ~1802 → ~2176 files.
+- FLE's per-entity renderers hardcode Factorio **2.0** direction tables
+  (`{0,4,8,12}`) but the engine yields **1.1** values (`0/2/4/6`) → `KeyError`;
+  `render_fle.py` patches every renderer's `DIRECTIONS`/`RELATIVE_DIRECTIONS` to 1.1.
+- `_render_rails` assumes Entity objects → crashes on dict entities (drop rails);
+  the belt renderer reads `underground-belt['type']` (default it to `input`).
+- `ImageResolver` ignores its path arg → set `FLE_SPRITES_DIR`.
+
+Result: belt lanes, inserters, poles, chests and machines render with true sprites
+(see the local `docs/demo/hero_factorio.png`). Alternatively, paste an exported
+`*.blueprint.txt` straight into Factorio for a perfect in-game render.
+
 ## Reproduce
 
 ```bash
