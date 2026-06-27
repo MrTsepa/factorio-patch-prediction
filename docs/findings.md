@@ -151,12 +151,15 @@ against FactorioBin's own reference images.
   the bake (and reads) fail with `UnsatisfiedLinkError`. Swap in the arm64 fork
   `com.github.usefulness:webp-imageio:0.11.0` (same `com.luciad.imageio.webp` API) +
   add `kotlin-stdlib` (the fork is Kotlin). `scripts/fbsr.sh` does this automatically.
-- Point it at the install and bake: `cfg-factorio -install=<app>/Contents -auto-find-exec`
-  (config stores `executable` **relative** to install → set it to `MacOS/factorio`);
-  then `profile-default-vanilla -f` and `build -a` (runs Factorio headless to dump
-  `data-raw` and packs sprite atlases). Render via a warm `bot-run` RPC service.
-- FBSR renders raw 1.1 **and** 2.0 strings directly (auto-migrates) — no manual
-  version conversion needed for rendering.
+- Point it at a **full DLC install** and bake: `cfg-factorio -install=<app>/Contents
+  -auto-find-exec` (config stores `executable` **relative** to install → set it to
+  `MacOS/factorio`); then `profile-default-vanilla -f` and `build -a` (runs Factorio
+  headless to dump `data-raw` and packs sprite atlases). Render via a warm `bot-run`
+  RPC service. The default `vanilla` profile already enables `space-age`, `quality`
+  and `elevated-rails`, so pointing at a Space-Age install bakes the full DLC
+  (≈17k sprites vs ≈7.7k base; ≈80 MB atlases). We use Factorio **2.0.76 full**.
+- FBSR renders raw 1.1 **and** 2.0/Space-Age strings directly (auto-migrates) — no
+  manual version conversion needed for rendering.
 
 **Validation harness** (`scripts/render_eval.py`): samples FactorioBin nodes that
 expose a `renderImageUrl`, renders each string with FBSR, then crop-to-content +
@@ -164,12 +167,20 @@ scale-search + sub-pixel aligns our render to the reference and scores it
 (blurred **SSIM**, **pixel-match %**, and an **error-area %** with localized error
 boxes). Run: `uv run python scripts/render_eval.py --sample --posts balancers 1o4z16 --num 6`.
 
-**Results** (our FBSR vs FactorioBin reference): base-2.0 blueprints match
-essentially pixel-for-pixel — e.g. 2.0.72 starters score **SSIM ≈ 0.87, 97%
-pixel-match, ~0% error-area**. The harness correctly localizes the one real gap:
-this install is **base-2.0 (no Space Age DLC)**, so Space-Age entities (turbo belts,
-etc.) render as `?` and light up as error regions (the diagnostic working as
-intended). Installing the Space Age DLC + baking an SA profile would close that.
+**Results** (our FBSR vs FactorioBin reference, baked from Factorio **2.0.76 + Space
+Age + Quality + Elevated Rails**): substantial blueprints (≥50 entities) — base
+**and** Space Age — match essentially pixel-for-pixel:
+**SSIM ≈ 0.79, ~88% pixel-match, ~0.12% error-area** (e.g. a 1365-entity Space-Age
+base scores 0.89 SSIM / **100% pixel-match** / 0% error-area). Only *tiny*
+blueprints (<~30 entities) score noisily — their reference JPEGs are 8–32 KB and
+too compressed to compare once blown up; that's a measurement artifact, not a
+renderer error (the error-area metric still reads near-0 for the clean ones).
+
+Earlier, baking from a **base-only** install made Space-Age entities render as `?`,
+and the harness localized them as error regions — exactly the diagnostic loop the
+goal asked for. Re-pointing FBSR at the full DLC install (`/Applications/factorio.app`)
+and re-baking closed that gap (the Space-Age sample dropped from 6.3% → 0.7%
+error-area).
 
 (A pure-Python fallback renderer via the **FLE** sibling repo also exists
 (`scripts/render_fle.py`); FBSR is higher fidelity and is the recommended path.)

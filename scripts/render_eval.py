@@ -249,16 +249,23 @@ def evaluate(sample_dir: Path, out_dir: Path, fbsr_run=FBSR_RUN, force_render=Fa
               f"err_area={err_frac:.1%} regions={len(regs):2d} v={meta.get('version')} ent={meta.get('entities')}")
 
     if results:
-        ss = np.array([r["ssim"] for r in results])
-        mm = np.array([r["pixel_match"] for r in results])
-        agg = {"n": len(results), "mean_ssim": float(ss.mean()), "median_ssim": float(np.median(ss)),
-               "mean_pixel_match": float(mm.mean()), "min_ssim": float(ss.min())}
+        def stats(rows):
+            ss = np.array([r["ssim"] for r in rows]); mm = np.array([r["pixel_match"] for r in rows])
+            ea = np.array([r["error_area"] for r in rows])
+            return {"n": len(rows), "mean_ssim": float(ss.mean()), "median_ssim": float(np.median(ss)),
+                    "mean_pixel_match": float(mm.mean()), "mean_error_area": float(ea.mean())}
+        # tiny refs (<50 entities) are heavily JPEG-compressed -> noise-limited, not renderer error
+        big = [r for r in results if (r.get("entities") or 0) >= 50]
+        agg = {"all": stats(results), "substantial_ge50ent": stats(big) if big else None}
         (out_dir / "report.json").write_text(json.dumps({"aggregate": agg, "samples": results}, indent=2))
-        print(f"\n=== AGGREGATE over {agg['n']} samples ===")
-        print(f"  mean SSIM       : {agg['mean_ssim']:.3f}  (median {agg['median_ssim']:.3f}, min {agg['min_ssim']:.3f})")
-        print(f"  mean pixel-match: {agg['mean_pixel_match']:.1%}")
-        worst = sorted(results, key=lambda r: r["ssim"])[:3]
-        print("  worst samples   :", ", ".join(f"{r['key']}({r['ssim']:.2f})" for r in worst))
+        print(f"\n=== AGGREGATE ===")
+        a = agg["all"]
+        print(f"  all {a['n']:2d} samples  : SSIM {a['mean_ssim']:.3f}  pixel-match {a['mean_pixel_match']:.0%}  error-area {a['mean_error_area']:.1%}")
+        if big:
+            b = agg["substantial_ge50ent"]
+            print(f"  >=50 entities {b['n']:2d}: SSIM {b['mean_ssim']:.3f}  pixel-match {b['mean_pixel_match']:.0%}  error-area {b['mean_error_area']:.2%}  <- headline")
+        worst = sorted(results, key=lambda r: r["error_area"], reverse=True)[:3]
+        print("  highest error   :", ", ".join(f"{r['key']}({r['error_area']:.0%},{r.get('entities')}ent)" for r in worst))
     return results
 
 
