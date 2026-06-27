@@ -14,6 +14,7 @@ dependencies = [
     "requests>=2.31",
     "tqdm>=4.66",
     "scikit-image>=0.25.2",
+    "modal>=1.5.1",
 ]
 
 [project.optional-dependencies]

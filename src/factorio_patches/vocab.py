@@ -38,17 +38,29 @@ LOGISTICS_ENTITIES = BELT_ENTITIES | {
 PRESETS = {"none": None, "belt": BELT_ENTITIES, "logistics": LOGISTICS_ENTITIES}
 
 
-def entity_token(name: str, direction=None) -> str:
-    """Build the grid token for an entity. Missing direction -> 0."""
+# Entities whose input/output type is a real (non-derivable) structural choice we
+# must predict; we fold it into the token name as a ":input"/":output" suffix.
+IO_ENTITIES = ("underground-belt", "loader", "linked-belt")
+
+
+def entity_token(name: str, direction=None, io=None) -> str:
+    """Build the grid token for an entity. Missing direction -> 0.
+
+    ``io`` ("input"/"output", for undergrounds/loaders) is folded into the name as
+    a ``:io`` suffix so the model predicts it (it is NOT derivable from layout —
+    an input underground diving under a crossing belt looks locally identical to an
+    output emerging onto one)."""
+    base = f"{name}:{io}" if io else name
     try:
         d = 0 if direction is None else int(direction)
     except (TypeError, ValueError):
         d = 0
-    return f"{name}|{d}"
+    return f"{base}|{d}"
 
 
 def split_token(token: str):
-    """Inverse of entity_token. Returns (name, direction|None). Specials -> (token, None)."""
+    """Inverse of entity_token. Returns (name, direction|None). Specials -> (token, None).
+    ``name`` may carry an io suffix (e.g. ``underground-belt:output``)."""
     if "|" not in token:
         return token, None
     name, d = token.rsplit("|", 1)
@@ -56,6 +68,24 @@ def split_token(token: str):
         return name, int(d)
     except ValueError:
         return name, None
+
+
+def parse_name_io(name: str):
+    """Split an identity name into (real_name, io|None)."""
+    if ":" in name:
+        n, io = name.rsplit(":", 1)
+        if io in ("input", "output"):
+            return n, io
+    return name, None
+
+
+def io_for(name: str, entity: dict):
+    """The input/output type to encode for this entity, or None."""
+    if any(k in name for k in IO_ENTITIES):
+        t = entity.get("type")
+        if t in ("input", "output"):
+            return t
+    return None
 
 
 class Vocab:
@@ -122,7 +152,8 @@ def count_tokens(blueprints_jsonl: Path):
             bp = json.loads(line)
             n_bp += 1
             for e in bp.get("entities", []):
-                counter[entity_token(e.get("name"), e.get("direction"))] += 1
+                name = e.get("name")
+                counter[entity_token(name, e.get("direction"), io_for(name, e))] += 1
     return counter, n_bp
 
 

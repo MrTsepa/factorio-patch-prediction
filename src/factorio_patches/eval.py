@@ -14,7 +14,7 @@ from .dataset import load_dataset, make_datasets
 from .metrics import evaluate, format_metrics, most_common_entity_id
 from .model import build_model
 from .render import render_prediction_set
-from .vocab import EMPTY_ID, MASK_ID, Vocab, split_token
+from .vocab import EMPTY_ID, MASK_ID, Vocab, parse_name_io, split_token
 from torch.utils.data import DataLoader
 
 
@@ -55,7 +55,9 @@ def _set_underground_types(entities, grid, vocab, version):
             return nm.endswith("transport-belt") or nm.endswith("splitter")
         return False
 
-    ug = [e for e in entities if e["name"].endswith("underground-belt")]
+    ug = [e for e in entities if e["name"].endswith("underground-belt") and "type" not in e]
+    if not ug:
+        return
     # 1) lane-pairing baseline
     groups = defaultdict(list)
     for e in ug:
@@ -111,13 +113,16 @@ def grid_to_blueprint(grid: np.ndarray, vocab: Vocab,
             name, direction = split_token(tok)
             if name in ("UNK",):
                 continue
+            name, io = parse_name_io(name)        # strip predicted input/output suffix
             n += 1
             ent = {"entity_number": n, "name": name,
                    "position": {"x": float(c), "y": float(r)}}
             if direction:
                 ent["direction"] = int(direction)
+            if io:
+                ent["type"] = io
             entities.append(ent)
-    _set_underground_types(entities, grid, vocab, version)
+    _set_underground_types(entities, grid, vocab, version)   # fallback for any still missing
     return {"blueprint": {"item": "blueprint", "entities": entities,
                           "version": version, "label": label}}
 

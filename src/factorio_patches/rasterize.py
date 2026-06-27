@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .vocab import EMPTY_ID, UNK, Vocab, entity_token, split_token
+from .vocab import EMPTY_ID, UNK, Vocab, entity_token, io_for, split_token
 
 
 class RasterizeTooLarge(ValueError):
@@ -58,9 +58,10 @@ def rasterize_blueprint(bp: dict, vocab: Vocab, max_dim: int = 512) -> Rasterize
         y = pos.get("y")
         if x is None or y is None:
             continue
+        nm = e.get("name")
         cols.append(_round_cell(x))
         rows.append(_round_cell(y))
-        tokens.append(entity_token(e.get("name"), e.get("direction")))
+        tokens.append(entity_token(nm, e.get("direction"), io_for(nm, e)))
 
     if not cols:
         grid = np.full((1, 1), EMPTY_ID, dtype=np.int16)
