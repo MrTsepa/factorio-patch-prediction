@@ -33,9 +33,12 @@ app = modal.App("factorio-patch-inpaint")
 #  to a Modal Volume instead -- see the commented alternative at the bottom.)
 # ---------------------------------------------------------------------------- #
 # Prefer the scaled dataset; fall back to dataset20.pt so smoke runs work today.
-LOCAL_DATASET = next(p for p in ("data/processed/dataset5k.pt",
-                                 "data/processed/dataset20.pt")
-                     if os.path.exists(p))
+# NOTE: this module is imported in the CONTAINER too (to hydrate the function), where the
+# local data/ paths don't exist -- so a bare next() would raise StopIteration and crash the
+# container at import. The default keeps import safe; the container reads /root/dataset.pt.
+LOCAL_DATASET = next((p for p in ("data/processed/dataset5k.pt",
+                                  "data/processed/dataset20.pt")
+                      if os.path.exists(p)), "data/processed/dataset5k.pt")
 print(f"[modal_train] baking dataset: {LOCAL_DATASET}")
 
 image = (
