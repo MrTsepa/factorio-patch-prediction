@@ -85,9 +85,6 @@ def build_dataset(
     g2idx = _dd(list)
     for i, g in enumerate(groups):
         g2idx[g].append(i)
-    gkeys = list(g2idx.keys())
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(gkeys))
     n_test = int(round(n * test_frac))
     n_val = int(round(n * val_frac))
     if n >= 3:
@@ -95,17 +92,26 @@ def build_dataset(
         n_val = max(1, n_val)
         if n_test + n_val >= n:
             n_test, n_val = 1, 1
-    test_idx, val_idx, train_idx = [], [], []
-    for gi in perm.tolist():
-        idxs = g2idx[gkeys[gi]]
-        if len(test_idx) < n_test:
-            test_idx += idxs
-        elif len(val_idx) < n_val:
-            val_idx += idxs
-        else:
-            train_idx += idxs
+    # Size-aware bin-packing: assign LARGEST groups first, each to whichever split is most
+    # under-filled relative to its target (ties -> the split with the bigger target). This
+    # deterministically routes a giant component into train regardless of seed, instead of
+    # relying on it luckily landing there, so val/test stay near their target fractions.
+    targets = {"train": n - n_val - n_test, "val": n_val, "test": n_test}
+    bins = {"train": [], "val": [], "test": []}
+    sizes = {"train": 0, "val": 0, "test": 0}
+    rng = np.random.default_rng(seed)
+    gkeys = list(g2idx.keys())
+    rng.shuffle(gkeys)                                   # seed-varied tie-break
+    gkeys.sort(key=lambda g: len(g2idx[g]), reverse=True)  # largest first (stable)
+    for g in gkeys:
+        s = min(("train", "val", "test"),
+                key=lambda k: (sizes[k] / targets[k] if targets[k] > 0 else 9e99, -targets[k]))
+        bins[s] += g2idx[g]
+        sizes[s] += len(g2idx[g])
+    train_idx, val_idx, test_idx = bins["train"], bins["val"], bins["test"]
     print(f"  grouped split over {len(gkeys)} groups "
-          f"(largest={max(len(v) for v in g2idx.values())} blueprints)")
+          f"(largest={max(len(v) for v in g2idx.values())} bp); "
+          f"sizes train={sizes['train']} val={sizes['val']} test={sizes['test']}")
 
     def take(idxs):
         return [grids[i] for i in idxs], [metas[i] for i in idxs]

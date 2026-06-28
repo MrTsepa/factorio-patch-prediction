@@ -118,7 +118,7 @@ def main(epochs: int = 80, samples: int = 16000, val_samples: int = 4096,
     max_seconds = 120.0 if smoke else float(WALL_SOFT_S)
     handles = []
     for c in CONFIGS:
-        gpu = "A10G" if smoke else c["gpu"]          # keep smoke cheap
+        gpu = c["gpu"]                               # smoke validates the REAL per-arch GPU
         fn = train_remote.with_options(gpu=gpu, timeout=WALL_HARD_S)
         handles.append((c["name"], fn.spawn(
             c["arch"], c["name"], c["hp"], epochs, samples,
