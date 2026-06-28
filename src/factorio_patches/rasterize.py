@@ -35,6 +35,8 @@ class RasterizedBlueprint:
     label: str | None = None
     source_hash: str | None = None
     bp_id: str | None = None
+    group_id: str | None = None   # anti-leakage split group (connected component)
+    source: str | None = None     # corpus label (factoriobin / factorioprints)
     meta: dict = field(default_factory=dict)
 
     @property
@@ -66,7 +68,8 @@ def rasterize_blueprint(bp: dict, vocab: Vocab, max_dim: int = 512) -> Rasterize
     if not cols:
         grid = np.full((1, 1), EMPTY_ID, dtype=np.int16)
         return RasterizedBlueprint(grid, 1, 1, (0, 0, 0, 0), 0, 0, 0, 0,
-                                   bp.get("label"), bp.get("source_hash"), bp.get("id"))
+                                   bp.get("label"), bp.get("source_hash"), bp.get("id"),
+                                   bp.get("group_id"), bp.get("source"))
 
     cols = np.asarray(cols, dtype=np.int64)
     rows = np.asarray(rows, dtype=np.int64)
@@ -97,6 +100,7 @@ def rasterize_blueprint(bp: dict, vocab: Vocab, max_dim: int = 512) -> Rasterize
         grid=grid, height=H, width=W, bbox=(min_x, min_y, max_x, max_y),
         n_entities=len(tokens), n_cells_filled=filled, n_collisions=collisions, n_unk=n_unk,
         label=bp.get("label"), source_hash=bp.get("source_hash"), bp_id=bp.get("id"),
+        group_id=bp.get("group_id"), source=bp.get("source"),
     )
 
 

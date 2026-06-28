@@ -95,9 +95,14 @@ def _iter_blueprint_txt(raw_root: Path):
         yield source_hash, bp_path, source_url, (info_path if info_path.exists() else None)
 
 
-def decode_raw_dir(raw_root: Path, out_dir: Path) -> dict:
-    """Decode every blueprint.txt under raw_root, writing decoded/<hash>.json."""
+def decode_raw_dir(raw_root: Path, out_dir: Path, source: str | None = None) -> dict:
+    """Decode every blueprint.txt under raw_root, writing decoded/<hash>.json.
+
+    ``source`` labels the corpus this raw root came from (e.g. 'factoriobin' /
+    'factorioprints'); defaults to ``raw_root.name``.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    source = source or raw_root.name
     n_ok = n_err = 0
     errors = []
     for source_hash, bp_path, source_url, info_path in _iter_blueprint_txt(raw_root):
@@ -117,6 +122,7 @@ def decode_raw_dir(raw_root: Path, out_dir: Path) -> dict:
                 info = None
         record = {
             "source_hash": source_hash,
+            "source": source,
             "source_url": source_url,
             "info": info,
             "data": data,

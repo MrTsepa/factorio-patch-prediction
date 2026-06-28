@@ -123,6 +123,100 @@ def extract_decoded_dir(decoded_dir: Path, out_path: Path, max_entities: int) ->
     return stats
 
 
+def extract_corpus(sources, out_path: Path, max_entities: int = DEFAULT_MAX_ENTITIES,
+                   group_mode: str = "component", min_bridge_entities: int = 8) -> dict:
+    """Merge multiple decoded dirs, dedup by entity-multiset, assign anti-leakage groups.
+
+    ``sources``: list of ``(decoded_dir, source_label, priority)``; lower priority wins a
+    cross-source duplicate (so a blueprint shared by FactorioBin + FactorioPrints is kept
+    from the curated FactorioBin copy). ``group_id`` (for the split) is a connected
+    component over the (source_hash <-> entity_hash) graph: two books that share ANY
+    identical blueprint land in the same group, so they never straddle train/test.
+    """
+    from collections import defaultdict
+
+    from .dedup import entity_multiset_hash
+
+    records = []
+    for decoded_dir, label, _prio in sorted(sources, key=lambda s: s[2]):
+        files = sorted(Path(decoded_dir).glob("*.json"))
+        n_src = 0
+        for fp in files:
+            try:
+                rec = json.loads(fp.read_text())
+            except Exception as e:
+                print(f"  [skip] {fp.name}: {e}")
+                continue
+            data = rec.get("data", rec)
+            sh = rec.get("source_hash") or fp.stem
+            for bp in extract_blueprints(data, source_hash=sh, max_entities=max_entities):
+                eh = entity_multiset_hash(bp["entities"])
+                if eh is None:
+                    continue
+                bp.update(source=label, source_url=rec.get("source_url"),
+                          entity_hash=eh, id=f"{sh[:12]}#{bp['bp_index']}")
+                records.append(bp)
+                n_src += 1
+        print(f"  [{label}] {len(files)} files -> {n_src} blueprints")
+
+    # union-find: bridge source_hashes that share an entity_hash -> connected components
+    parent: dict[str, str] = {}
+
+    def find(a):
+        parent.setdefault(a, a)
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    if group_mode == "component":
+        by_hash = defaultdict(list)
+        hash_n: dict[str, int] = {}
+        for r in records:
+            by_hash[r["entity_hash"]].append(r["source_hash"])
+            hash_n[r["entity_hash"]] = max(hash_n.get(r["entity_hash"], 0), r["n_entities"])
+        # Only BRIDGE books over a SUBSTANTIAL shared blueprint. A trivial (1-2 entity)
+        # blueprint shared across many books would falsely union them into one mega-group;
+        # and below the dataset's min_entities such a blueprint isn't even trained on.
+        for h, shs in by_hash.items():
+            if hash_n[h] < min_bridge_entities:
+                continue
+            for s in shs[1:]:
+                union(shs[0], s)
+        gid = lambda sh: find(sh)            # noqa: E731
+    else:
+        gid = lambda sh: sh                  # noqa: E731
+
+    # dedup keeping first occurrence (records are priority- then scan-ordered)
+    seen, kept = set(), []
+    by_source = defaultdict(int)
+    for r in records:
+        if r["entity_hash"] in seen:
+            continue
+        seen.add(r["entity_hash"])
+        r["group_id"] = gid(r["source_hash"])
+        kept.append(r)
+        by_source[r["source"]] += 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w") as out:
+        for r in kept:
+            out.write(json.dumps(r) + "\n")
+    stats = {"records": len(records), "kept": len(kept),
+             "dropped_dups": len(records) - len(kept),
+             "groups": len({r["group_id"] for r in kept}),
+             "kept_by_source": dict(by_source)}
+    print(f"\nextract_corpus: {stats['records']} -> {stats['kept']} kept "
+          f"({stats['dropped_dups']} dup-dropped), {stats['groups']} groups "
+          f"-> {out_path}\n  by source: {stats['kept_by_source']}")
+    return stats
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Extract individual blueprints from decoded JSON.")
     ap.add_argument("--decoded", type=Path, required=True, help="dir of decoded <hash>.json files")

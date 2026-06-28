@@ -61,6 +61,7 @@ def build_dataset(
         grids.append(rb.grid.astype(np.int16))
         metas.append({
             "id": rb.bp_id, "label": rb.label, "source_hash": rb.source_hash,
+            "group_id": rb.group_id, "source": rb.source,
             "height": rb.height, "width": rb.width, "n_entities": rb.n_entities,
             "n_filled": rb.n_cells_filled, "density": round(rb.density, 4),
             "n_collisions": rb.n_collisions, "n_unk": rb.n_unk,
@@ -74,19 +75,37 @@ def build_dataset(
     if n == 0:
         raise RuntimeError("no usable blueprints after rasterization/filtering")
 
+    # Anti-leakage split: assign WHOLE groups (connected components of books that share
+    # any identical blueprint; falls back to source_hash, then id) to a single split, so
+    # near-duplicate blueprints never straddle train/val/test (the old per-blueprint
+    # permutation leaked: one book's siblings landed in both train and test). Targets are
+    # counted in BLUEPRINTS (not groups) so the val/test fractions stay honest.
+    from collections import defaultdict as _dd
+    groups = [m.get("group_id") or m.get("source_hash") or m["id"] for m in metas]
+    g2idx = _dd(list)
+    for i, g in enumerate(groups):
+        g2idx[g].append(i)
+    gkeys = list(g2idx.keys())
     rng = np.random.default_rng(seed)
-    order = rng.permutation(n)
+    perm = rng.permutation(len(gkeys))
     n_test = int(round(n * test_frac))
     n_val = int(round(n * val_frac))
-    # Guarantee at least 1 in val/test when we have enough blueprints.
     if n >= 3:
         n_test = max(1, n_test)
         n_val = max(1, n_val)
         if n_test + n_val >= n:
             n_test, n_val = 1, 1
-    test_idx = order[:n_test]
-    val_idx = order[n_test:n_test + n_val]
-    train_idx = order[n_test + n_val:]
+    test_idx, val_idx, train_idx = [], [], []
+    for gi in perm.tolist():
+        idxs = g2idx[gkeys[gi]]
+        if len(test_idx) < n_test:
+            test_idx += idxs
+        elif len(val_idx) < n_val:
+            val_idx += idxs
+        else:
+            train_idx += idxs
+    print(f"  grouped split over {len(gkeys)} groups "
+          f"(largest={max(len(v) for v in g2idx.values())} blueprints)")
 
     def take(idxs):
         return [grids[i] for i in idxs], [metas[i] for i in idxs]
