@@ -24,6 +24,50 @@ from .vocab import EMPTY_ID, MASK_ID, Vocab
 # --------------------------------------------------------------------------- #
 # Building / saving the processed grids + split
 # --------------------------------------------------------------------------- #
+def _bridge_near_dups(grids, group_ids, threshold: float = 0.85):
+    """Union split-groups of same-shape grids that are >= threshold identical over their
+    OCCUPIED cells. The exact entity-multiset grouping misses near-duplicates (blueprints
+    differing by a few entities), which would otherwise straddle train/val/test and leak
+    the eval (a sampled patch identical to one the model trained on). Agreement is over the
+    union of non-EMPTY cells so the shared empty background doesn't inflate the score."""
+    from collections import defaultdict
+    parent = {g: g for g in dict.fromkeys(group_ids)}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    by_shape = defaultdict(list)
+    for i, g in enumerate(grids):
+        by_shape[g.shape].append(i)
+    n_pairs = 0
+    for idxs in by_shape.values():
+        if len(idxs) < 2:
+            continue
+        flat = np.stack([grids[i].reshape(-1) for i in idxs])      # [m, HW]
+        for a in range(len(idxs) - 1):
+            ga, rest = flat[a], flat[a + 1:]
+            occ = (rest != EMPTY_ID) | (ga != EMPTY_ID)            # [k, HW]
+            denom = occ.sum(axis=1)
+            agree = ((rest == ga) & occ).sum(axis=1)
+            frac = np.where(denom > 0, agree / np.maximum(denom, 1), 0.0)
+            for off in np.nonzero(frac >= threshold)[0]:
+                union(group_ids[idxs[a]], group_ids[idxs[a + 1 + int(off)]])
+                n_pairs += 1
+    new_groups = [find(g) for g in group_ids]
+    nb, na = len(set(group_ids)), len(set(new_groups))
+    print(f"  near-dup bridge: {n_pairs} same-shape pairs >= {threshold:.0%} occupied-identical"
+          f" -> groups {nb} -> {na}")
+    return new_groups
+
+
 def build_dataset(
     blueprints_jsonl: Path,
     vocab: Vocab,
@@ -82,6 +126,7 @@ def build_dataset(
     # counted in BLUEPRINTS (not groups) so the val/test fractions stay honest.
     from collections import defaultdict as _dd
     groups = [m.get("group_id") or m.get("source_hash") or m["id"] for m in metas]
+    groups = _bridge_near_dups(grids, groups)   # also catch near-dups the exact hash missed
     g2idx = _dd(list)
     for i, g in enumerate(groups):
         g2idx[g].append(i)

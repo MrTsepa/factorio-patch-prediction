@@ -95,6 +95,20 @@ def _pred_panel(model, val_ds, vocab, device, n=4):
     return out
 
 
+def _seed_worker(_worker_id):
+    """Give each DataLoader worker an independent, per-epoch RNG stream.
+
+    Without this, num_workers>0 forks copies of the dataset's single numpy Generator, so
+    every worker emits IDENTICAL patches and re-forks the SAME set each epoch (PyTorch
+    reseeds python/torch + numpy's *global* RNG per worker, but NOT a Generator instance).
+    ``info.seed`` = base_seed + worker_id, and PyTorch draws a fresh base_seed each epoch
+    for non-persistent workers, so this varies per worker AND per epoch.
+    """
+    info = torch.utils.data.get_worker_info()
+    if info is not None:
+        info.dataset._rng = np.random.default_rng(info.seed % (2 ** 32))
+
+
 def train(args) -> dict:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -115,7 +129,8 @@ def train(args) -> dict:
           f"val={len(payload['splits']['val'])} test={len(payload['splits']['test'])} blueprints")
 
     train_loader = DataLoader(ds["train"], batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.num_workers, drop_last=True)
+                              num_workers=args.num_workers, drop_last=True,
+                              worker_init_fn=_seed_worker)
     val_loader = DataLoader(ds["val"], batch_size=args.batch_size, shuffle=False,
                             num_workers=args.num_workers) if ds["val"] else None
     test_loader = DataLoader(ds["test"], batch_size=args.batch_size, shuffle=False,
