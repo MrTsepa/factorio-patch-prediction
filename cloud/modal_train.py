@@ -68,12 +68,19 @@ WALL_SOFT_S = 10200      # 2h50m -- in-loop cap; ~10min reserved for test eval/c
 # data-hungry -- give it an A100-40GB so it fits batch 128 and gets the most
 # epochs inside the 3h budget (this 20x data is the real test of whether it
 # catches up). bf16 AMP + torch.compile are on for both.
+# Architecture comparison on identical leak-free data: the diagnosis said the patch=2 ViT
+# fails on cell-precise placement (thin decoder + coarse patches), so we test U-Net-based
+# variants — pure scale, bottleneck self-attention (UNETR-lite), and axial attention (the
+# axis-aligned-line prior for belts/pipes) — all ~12M params for a size-fair comparison.
 CONFIGS = [
-    dict(arch="unet", name="unet-d96", gpu="A10G",
-         hp=dict(d_model=96, lr=2e-3, batch_size=192, weight_decay=0.01)),
-    dict(arch="transformer", name="tf-p2-d256", gpu="A100-40GB",
-         hp=dict(d_model=256, depth=8, heads=8, patch=2, lr=1e-3,
-                 batch_size=128, weight_decay=0.05)),
+    dict(arch="unet", name="unet-d96", gpu="A10G",                      # 5.1M baseline / bar
+         hp=dict(d_model=96, lr=2e-3, batch_size=128, weight_decay=0.01)),
+    dict(arch="unet-scaled", name="unet-scaled-d80", gpu="A10G",        # ~14M: does scale alone win?
+         hp=dict(d_model=80, lr=2e-3, batch_size=128, weight_decay=0.01)),
+    dict(arch="unet-attn", name="unet-attn-d96", gpu="A10G",            # ~12M: bottleneck attention
+         hp=dict(d_model=96, depth=4, heads=8, lr=1.5e-3, batch_size=128, weight_decay=0.01)),
+    dict(arch="unet-axial", name="unet-axial-d128", gpu="A10G",         # ~12M: axial attention
+         hp=dict(d_model=128, heads=8, lr=1.5e-3, batch_size=96, weight_decay=0.01)),
 ]
 
 
@@ -121,9 +128,9 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
 
 
 @app.local_entrypoint()
-def main(epochs: int = 80, samples: int = 16000, val_samples: int = 4096,
-         patience: int = 8, smoke: bool = False):
-    """Launch U-Net (A10G) + transformer (A100-40GB) in parallel, each 3h-capped."""
+def main(epochs: int = 120, samples: int = 16000, val_samples: int = 4096,
+         patience: int = 10, smoke: bool = False):
+    """Launch the architecture comparison (4 variants) in parallel, each 3h-capped."""
     max_seconds = 120.0 if smoke else float(WALL_SOFT_S)
     # Unique + descriptive wandb names: <arch-config>-<data>-[smoke-]<MMDD-HHMM>, all
     # runs of one launch share a group so they overlay/compare cleanly (no more dupes).

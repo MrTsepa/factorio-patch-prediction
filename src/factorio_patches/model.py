@@ -132,6 +132,93 @@ class PatchInpaintTransformer(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
+def _valid_heads(dim: int, want: int) -> int:
+    for h in (want, 8, 4, 2, 1):
+        if dim % h == 0:
+            return h
+    return 1
+
+
+class AxialAttention(nn.Module):
+    """Row-then-column self-attention over a [B,C,H,W] map (O(H*W*(H+W)) not (HW)^2).
+
+    A single row-attention layer can carry an axis-aligned run (belt/pipe/rail) across an
+    entire row of the hole in one step — the matching inductive bias for Factorio layouts —
+    while keeping full spatial resolution. Pre-norm + residual; position comes from the
+    surrounding position-aware conv features.
+    """
+
+    def __init__(self, dim: int, heads: int = 4):
+        super().__init__()
+        h = _valid_heads(dim, heads)
+        self.n1, self.n2 = _norm(dim), _norm(dim)
+        self.row = nn.MultiheadAttention(dim, h, batch_first=True)
+        self.col = nn.MultiheadAttention(dim, h, batch_first=True)
+
+    def forward(self, x):                                  # [B,C,H,W]
+        B, C, H, W = x.shape
+        r = self.n1(x).permute(0, 2, 3, 1).reshape(B * H, W, C)   # rows: attend along W
+        r, _ = self.row(r, r, r, need_weights=False)
+        x = x + r.reshape(B, H, W, C).permute(0, 3, 1, 2)
+        c = self.n2(x).permute(0, 3, 2, 1).reshape(B * W, H, C)   # cols: attend along H
+        c, _ = self.col(c, c, c, need_weights=False)
+        x = x + c.reshape(B, W, H, C).permute(0, 3, 2, 1)
+        return x
+
+
+class UNet2D(nn.Module):
+    """Configurable U-Net backbone: variable depth/width, optional bottleneck self-attention
+    (UNETR-lite) and optional axial-attention stages. Subsumes the scaled / attention-augmented
+    / axial variants from one class."""
+
+    def __init__(self, vocab_size: int, d_model: int = 96, base: int = 96, depth: int = 2,
+                 bottleneck_attn: int = 0, axial_stages: tuple = (), heads: int = 4,
+                 grid: int = 64):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.inc = ConvBlock(d_model, base)
+        chs = [base * (2 ** i) for i in range(depth + 1)]          # e.g. depth2 -> [b,2b,4b]
+        self.downs = nn.ModuleList([Down(chs[i], chs[i + 1]) for i in range(depth)])
+        self.ups = nn.ModuleList([Up(chs[i + 1], chs[i], chs[i]) for i in reversed(range(depth))])
+        self.outc = nn.Conv2d(base, vocab_size, 1)
+
+        bdim, bn = chs[-1], grid // (2 ** depth)
+        if bottleneck_attn > 0:
+            self.bpos = nn.Parameter(torch.randn(1, bn * bn, bdim) * 0.02)
+            layer = nn.TransformerEncoderLayer(
+                bdim, _valid_heads(bdim, heads), dim_feedforward=4 * bdim,
+                batch_first=True, activation="gelu", norm_first=True, dropout=0.0)
+            self.battn = nn.TransformerEncoder(layer, bottleneck_attn)
+        else:
+            self.battn = None
+        self.axial = nn.ModuleDict({
+            str(grid // (2 ** k)): AxialAttention(chs[k], heads)
+            for k in range(depth + 1) if (grid // (2 ** k)) in axial_stages})
+
+    def _maybe_axial(self, f):
+        key = str(f.shape[-1])
+        return self.axial[key](f) if key in self.axial else f
+
+    def forward(self, x):                                  # [B,H,W] long
+        e = self.embed(x).permute(0, 3, 1, 2)
+        feats = [self._maybe_axial(self.inc(e))]
+        for d in self.downs:
+            feats.append(self._maybe_axial(d(feats[-1])))
+        b = feats[-1]
+        if self.battn is not None:
+            B, C, h, w = b.shape
+            s = b.flatten(2).transpose(1, 2) + self.bpos
+            b = self.battn(s).transpose(1, 2).reshape(B, C, h, w)
+        u = b
+        for i, up in enumerate(self.ups):
+            u = up(u, feats[-(i + 2)])
+        return self.outc(u)
+
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+
 def build_model(arch: str, vocab_size: int, d_model: int = 64, depth: int = 6,
                 heads: int = 6, patch: int = 2):
     if arch == "unet":
@@ -139,4 +226,12 @@ def build_model(arch: str, vocab_size: int, d_model: int = 64, depth: int = 6,
     if arch == "transformer":
         return PatchInpaintTransformer(vocab_size, d_model=d_model, patch=patch,
                                        depth=depth, heads=heads)
+    if arch == "unet-scaled":            # control: deeper + wider, no attention
+        return UNet2D(vocab_size, d_model=d_model, base=d_model, depth=3, heads=heads)
+    if arch == "unet-attn":              # UNETR-lite: U-Net + bottleneck self-attention
+        return UNet2D(vocab_size, d_model=d_model, base=d_model, depth=2,
+                      bottleneck_attn=max(2, depth), heads=heads)
+    if arch == "unet-axial":             # task-matched: U-Net + axial attention (rows/cols)
+        return UNet2D(vocab_size, d_model=d_model, base=d_model, depth=2,
+                      axial_stages=(16, 32), heads=heads)
     raise ValueError(f"unknown arch: {arch}")
