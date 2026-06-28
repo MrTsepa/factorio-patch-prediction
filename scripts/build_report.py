@@ -40,6 +40,15 @@ RESULTS = [
 ]
 BASELINE = 0.077  # majority-entity baseline entity-acc
 
+# MaskGIT 2x2: (backbone, plain single-shot, maskgit single-shot, maskgit iterative).
+# mg-unet/mg-axial are 1500-sample subset estimates (those two dropped before full test eval).
+MASKGIT = [
+    ("U-Net d96", 0.550, 0.546, 0.556),
+    ("scaled U-Net", 0.544, 0.492, 0.507),
+    ("axial U-Net", 0.502, 0.438, 0.501),
+    ("ViT transformer", 0.289, 0.304, 0.410),
+]
+
 
 def b64(img, max_w=None, fmt="PNG"):
     if max_w and img.width > max_w:
@@ -172,6 +181,15 @@ def _cmp_rows():
     return out
 
 
+def _maskgit_rows():
+    out = ""
+    for name, plain, mg_ss, mg_it in MASKGIT:
+        out += (f"<tr><td>{name}</td><td class=num>{plain:.3f}</td><td class=num>{mg_ss:.3f}</td>"
+                f"<td class=num><b>{mg_it:.3f}</b></td>"
+                f"<td class=num style='color:#5c8'>+{mg_it - mg_ss:.3f}</td></tr>")
+    return out
+
+
 def _gallery(examples, tmp):
     cards = ""
     for ex in examples:
@@ -236,6 +254,19 @@ Best model: <b>{cfg.get('arch')}</b> · {model.num_params():,} params.</div>
 <div class=sub style=margin-top:10px>The compact pure-convolutional <b>U-Net wins</b> — and is the cheapest. Adding global
 or axial <b>attention hurts</b>, and pure <b>scale is a wash</b>: the gap was never semantics (top-5 ≈ 0.95) but
 <b>cell-precise placement</b>, where the U-Net's full-resolution decoder is simply the right tool.</div></div>
+
+<h2>MaskGIT — does iterative decoding help? <span class=sub style=font-size:13px>(2×2: training scheme × decoding)</span></h2>
+<div class=card><table>
+<tr><th>backbone</th><th>plain single-shot</th><th>MaskGIT single-shot</th><th>MaskGIT iterative</th><th>decode gain</th></tr>
+{_maskgit_rows()}
+</table>
+<div class=sub style=margin-top:10px>MaskGIT trains on variable-ratio masks and fills the hole over 8 confidence-ordered
+steps (commit the surest cells, re-condition, repeat). The <b>decode gain is monotonic in backbone weakness</b>
+— transformer <b>+0.105</b>, axial +0.062, scaled +0.015, U-Net +0.010: iterative decoding's job is building
+coherence, so it rescues a coarse model (transformer 0.289→<b>0.410</b>) but adds ~nothing to a U-Net that
+already predicts coherently in one shot. <b>It does not beat the plain U-Net (0.556 ≈ 0.550).</b> The 2×2 split
+(vs MaskGIT-single-shot) shows the variable-mask <i>training</i> is neutral-to-harmful, and the <i>decoding</i>
+is the only upside — and only for weak backbones.</div></div>
 
 <h2>How the data is made honest</h2>
 <div class=card><ul style=margin:0;color:#cdd>
