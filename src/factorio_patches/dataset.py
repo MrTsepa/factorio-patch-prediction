@@ -227,6 +227,7 @@ class FactorioPatchDataset(Dataset):
         max_attempts: int = 12,
         seed: int = 0,
         size_power: float = 0.0,
+        maskgit: bool = False,
     ):
         if mask_size > crop_size:
             raise ValueError("mask_size must be <= crop_size")
@@ -234,6 +235,7 @@ class FactorioPatchDataset(Dataset):
         self.C = crop_size
         self.M = mask_size
         self.train = train
+        self.maskgit = maskgit
         self.min_nonempty_frac = min_nonempty_frac
         self.max_attempts = max_attempts
         self.seed = seed
@@ -308,7 +310,17 @@ class FactorioPatchDataset(Dataset):
         y = canvas.astype(np.int64)
         x = y.copy()
         mask = np.zeros((C, C), dtype=bool)
-        mask[mt:mt + M, ml:ml + M] = True
+        if self.maskgit:
+            # MaskGIT training: mask a VARIABLE fraction of the hole (cosine-biased toward
+            # high ratios), leaving the rest as visible context, so the model learns to fill
+            # PARTIAL holes — which iterative confidence-decoding relies on.
+            rr, cc = np.mgrid[mt:mt + M, ml:ml + M].reshape(2, -1)
+            f = float(np.cos(np.pi / 2 * rng.random()))      # ratio in (0,1], dense near 1
+            k = max(1, int(round(f * rr.size)))
+            sel = rng.choice(rr.size, size=k, replace=False)
+            mask[rr[sel], cc[sel]] = True
+        else:
+            mask[mt:mt + M, ml:ml + M] = True
         x[mask] = MASK_ID
         return {
             "x": torch.from_numpy(x),
@@ -327,7 +339,8 @@ class FactorioPatchDataset(Dataset):
 
 
 def make_datasets(payload: dict, train_length: int | None = None,
-                  val_length: int | None = None, seed: int = 0, size_power: float = 0.0):
+                  val_length: int | None = None, seed: int = 0, size_power: float = 0.0,
+                  maskgit: bool = False):
     """Build train/val/test FactorioPatchDataset objects + Vocab from a payload.
 
     ``size_power`` mildly weights TRAIN blueprint sampling by occupied-cell count (0 =
@@ -344,7 +357,8 @@ def make_datasets(payload: dict, train_length: int | None = None,
             return None
         return FactorioPatchDataset(grids, crop_size=C, mask_size=M, train=train,
                                     length=length, seed=seed,
-                                    size_power=size_power if train else 0.0)
+                                    size_power=size_power if train else 0.0,
+                                    maskgit=maskgit and train)
 
     n_val_default = max(len(sp.get("val") or []) * 8, 128)
     n_test_default = max(len(sp.get("test") or []) * 8, 128)

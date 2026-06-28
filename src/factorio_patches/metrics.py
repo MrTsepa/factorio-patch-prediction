@@ -7,11 +7,40 @@ trivial baselines (always-EMPTY, always-majority-entity).
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .vocab import EMPTY_ID, UNK_ID
+
+
+@torch.no_grad()
+def maskgit_decode(model, x, mask, steps: int = 10):
+    """Iterative confidence decoding (MaskGIT): start with the hole fully masked, then each
+    step predict every cell, COMMIT the most-confident still-masked cells (cosine schedule),
+    and re-run conditioned on them — so later cells are placed coherently with committed ones.
+    Returns the filled grid [B,H,W]. Assumes a uniform hole size across the batch (the fixed
+    16x16 eval hole)."""
+    cur = x.clone()
+    remaining = mask.clone()                          # [B,H,W] cells still masked
+    B = x.shape[0]
+    N = int(mask.view(B, -1).sum(1).max().item())     # hole cells (uniform)
+    pred = None
+    for t in range(1, steps + 1):
+        with torch.autocast(device_type=cur.device.type, dtype=torch.bfloat16,
+                            enabled=(cur.device.type == "cuda")):
+            logits = model(cur)
+        conf, pred = logits.softmax(dim=1).max(dim=1)              # [B,H,W]
+        n_after = math.ceil(math.cos(math.pi / 2 * t / steps) * N)
+        n_commit = int(remaining.view(B, -1).sum(1).max().item()) - n_after
+        if n_commit <= 0:
+            continue
+        idx = conf.masked_fill(~remaining, -1.0).view(B, -1).topk(n_commit, dim=1).indices
+        cur.view(B, -1).scatter_(1, idx, pred.view(B, -1).gather(1, idx))
+        remaining.view(B, -1).scatter_(1, idx, torch.zeros_like(idx, dtype=torch.bool))
+    return torch.where(remaining, pred, cur) if pred is not None else cur
 
 
 def masked_ce_loss(logits: torch.Tensor, y: torch.Tensor, mask: torch.Tensor,
@@ -103,12 +132,13 @@ def io_of_ids(vocab):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None) -> dict:
+def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None,
+             maskgit_steps: int = 0) -> dict:
     """Run model over loader and return model + baseline metrics on identical patches.
 
     If ``vocab`` is given, also reports underground/loader input/output accuracy
-    (``io_acc``): among masked cells whose target is an io-tagged entity, the
-    fraction where the predicted token's input/output matches.
+    (``io_acc``). If ``maskgit_steps>0``, the model's hole prediction is produced by
+    iterative confidence decoding (top-5 still comes from the single-shot logits).
     """
     model.eval()
     acc_model = MaskedCounts()
@@ -123,7 +153,10 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None) ->
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=(device.type == "cuda")):
             logits = model(x)
-        preds = logits.argmax(dim=1)
+        if maskgit_steps and maskgit_steps > 0:
+            preds = maskgit_decode(model, x, mask, steps=maskgit_steps)   # iterative fill
+        else:
+            preds = logits.argmax(dim=1)
         k = min(topk, logits.shape[1])
         topk_idx = logits.topk(k=k, dim=1).indices
         acc_model.update(preds, y, mask, topk_idx=topk_idx)

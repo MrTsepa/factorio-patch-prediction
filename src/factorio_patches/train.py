@@ -122,8 +122,12 @@ def train(args, on_epoch_end=None) -> dict:
     payload = load_dataset(ds_path)
     cfg = payload["config"]
     # Honor the dataset's crop/mask (the model is conv so it adapts, but keep them aligned).
+    mg = getattr(args, "maskgit", False)
     ds = make_datasets(payload, train_length=args.train_samples, val_length=args.val_samples,
-                       seed=args.seed, size_power=getattr(args, "size_power", 0.0))
+                       seed=args.seed, size_power=getattr(args, "size_power", 0.0), maskgit=mg)
+    eval_steps = args.maskgit_steps if mg else 0
+    if mg:
+        print(f"MaskGIT: variable-ratio masked training + {eval_steps}-step iterative decode eval")
     vocab = ds["vocab"]
     prior_id = most_common_entity_id(payload["splits"]["train"])
 
@@ -217,7 +221,8 @@ def train(args, on_epoch_end=None) -> dict:
         samples_per_sec = (nb * args.batch_size) / max(train_dt, 1e-6)
         sched.step()
 
-        val_metrics = evaluate(model, val_loader, device, prior_id, vocab=vocab) if val_loader else None
+        val_metrics = evaluate(model, val_loader, device, prior_id, vocab=vocab,
+                               maskgit_steps=eval_steps) if val_loader else None
         dt = time.time() - t0
         rec = {"epoch": epoch, "train_loss": train_loss, "seconds": round(dt, 1),
                "val": val_metrics}
@@ -307,7 +312,8 @@ def train(args, on_epoch_end=None) -> dict:
                "empty_weight": args.empty_weight, "lr": args.lr, "d_model": args.d_model,
                "crop_size": cfg["crop_size"], "mask_size": cfg["mask_size"]}
     if test_loader:
-        test_metrics = evaluate(model, test_loader, device, prior_id, vocab=vocab)
+        test_metrics = evaluate(model, test_loader, device, prior_id, vocab=vocab,
+                                maskgit_steps=eval_steps)
         print("\n=== TEST (best checkpoint) ===")
         print(format_metrics("test", test_metrics))
         summary["test"] = test_metrics
@@ -350,6 +356,9 @@ def main(argv=None) -> int:
     ap.add_argument("--patch", type=int, default=2, help="transformer patchify stride (power of 2)")
     ap.add_argument("--size-power", type=float, default=0.0,
                     help="mild size-weighting of TRAIN blueprint sampling (0=uniform, 0.5=sqrt)")
+    ap.add_argument("--maskgit", action="store_true",
+                    help="MaskGIT: variable-ratio masked training + iterative-decode eval")
+    ap.add_argument("--maskgit-steps", type=int, default=8, help="iterative decode steps")
     ap.add_argument("--train-samples", type=int, default=4000, help="patches sampled per epoch")
     ap.add_argument("--val-samples", type=int, default=1000)
     ap.add_argument("--num-workers", type=int, default=0)

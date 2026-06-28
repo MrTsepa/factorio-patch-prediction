@@ -83,13 +83,28 @@ CONFIGS = [
          hp=dict(d_model=128, heads=8, lr=1.5e-3, batch_size=96, weight_decay=0.01)),
 ]
 
+# MaskGIT across DIFFERENT backbones (same data/budget as the arch run): does iterative
+# confidence decoding (joint coherence) beat the single-shot numbers — and on which backbone?
+# Compare each vs its single-shot counterpart (unet 0.550, transformer 0.289, axial 0.502).
+CONFIGS_MASKGIT = [
+    dict(arch="unet", name="mg-unet-d96", gpu="A10G",                   # winner: does MG add?
+         hp=dict(d_model=96, lr=2e-3, batch_size=128, weight_decay=0.01)),
+    dict(arch="unet-axial", name="mg-axial-d128", gpu="A10G",
+         hp=dict(d_model=128, heads=8, lr=1.5e-3, batch_size=96, weight_decay=0.01)),
+    dict(arch="transformer", name="mg-tf-p2-d256", gpu="A100-40GB",     # does MG rescue the ViT?
+         hp=dict(d_model=256, depth=8, heads=8, patch=2, lr=1e-3, batch_size=128, weight_decay=0.05)),
+    dict(arch="unet-scaled", name="mg-scaled-d80", gpu="A10G",
+         hp=dict(d_model=80, lr=2e-3, batch_size=128, weight_decay=0.01)),
+]
+
 
 @app.function(image=image, gpu="A10G", timeout=WALL_HARD_S,
               secrets=[modal.Secret.from_name("wandb")],
               volumes={"/runs": vol})
 def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
                  val_samples: int, patience: int, max_seconds: float,
-                 group: str = None, tags: list = None):
+                 group: str = None, tags: list = None,
+                 maskgit: bool = False, maskgit_steps: int = 8):
     from argparse import Namespace
     from pathlib import Path
 
@@ -109,6 +124,7 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
         train_samples=samples, val_samples=val_samples,
         num_workers=4, device="auto", seed=0, amp="auto", compile=True,
         size_power=0.5,   # mild size-weighting so big factories' content gets covered
+        maskgit=maskgit, maskgit_steps=maskgit_steps,
         # --- early stopping + 3h wall-clock budget ---
         patience=patience, min_delta=1e-3, max_seconds=max_seconds, restore_best=True,
         wandb="factorio-patch-inpaint", run_name=run_name,
@@ -129,24 +145,27 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
 
 @app.local_entrypoint()
 def main(epochs: int = 120, samples: int = 16000, val_samples: int = 4096,
-         patience: int = 10, smoke: bool = False):
-    """Launch the architecture comparison (4 variants) in parallel, each 3h-capped."""
+         patience: int = 10, smoke: bool = False, maskgit: bool = False):
+    """Launch a parallel comparison (4 variants), each 3h-capped. --maskgit swaps to the
+    MaskGIT-across-backbones set (variable-mask training + iterative-decode eval)."""
     max_seconds = 120.0 if smoke else float(WALL_SOFT_S)
+    configs = CONFIGS_MASKGIT if maskgit else CONFIGS
     # Unique + descriptive wandb names: <arch-config>-<data>-[smoke-]<MMDD-HHMM>, all
     # runs of one launch share a group so they overlay/compare cleanly (no more dupes).
     launch = ("smoke-" if smoke else "") + time.strftime("%m%d-%H%M")
-    group = f"{DATA_TAG}-{launch}"
+    group = f"{DATA_TAG}-{'mg-' if maskgit else ''}{launch}"
     handles = []
-    for c in CONFIGS:
+    for c in configs:
         gpu = c["gpu"]                               # smoke validates the REAL per-arch GPU
         run_name = f"{c['name']}-{DATA_TAG}-{launch}"
-        tags = [c["arch"], f"data:{DATA_TAG}", f"gpu:{gpu}"] + (["smoke"] if smoke else [])
+        tags = [c["arch"], f"data:{DATA_TAG}", f"gpu:{gpu}"] + \
+            (["maskgit"] if maskgit else []) + (["smoke"] if smoke else [])
         fn = train_remote.with_options(gpu=gpu, timeout=WALL_HARD_S)
         handles.append((run_name, fn.spawn(
             c["arch"], run_name, c["hp"], epochs, samples,
-            val_samples, patience, max_seconds, group, tags)))
-    print(f"launched {len(handles)} runs (epochs<={epochs}, samples={samples}, "
-          f"patience={patience}, wall-cap={max_seconds:.0f}s)")
+            val_samples, patience, max_seconds, group, tags, maskgit)))
+    print(f"launched {len(handles)} runs (maskgit={maskgit}, epochs<={epochs}, "
+          f"samples={samples}, patience={patience}, wall-cap={max_seconds:.0f}s)")
     for name, h in handles:
         print(f"  [{name}] ->", h.get())
 
