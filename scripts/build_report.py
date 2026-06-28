@@ -20,7 +20,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
+
+HL = (0, 234, 255)   # highlight colour for the predicted (masked) region
 
 from factorio_patches.blueprint_decode import encode_blueprint_string
 from factorio_patches.dataset import load_dataset, make_datasets
@@ -58,6 +60,36 @@ def fbsr_render(jobs, fbsr_run):
         print(f"[warn] FBSR render failed ({e}); report will show abstract panels only")
 
 
+def _box_abstract(img, ml, mt, M, cell, color=HL):
+    """Precise hole outline on an abstract panel (we control its scale exactly)."""
+    d = ImageDraw.Draw(img)
+    d.rectangle([ml * cell, mt * cell, ml * cell + M * cell - 1, mt * cell + M * cell - 1],
+                outline=color, width=3)
+    return img
+
+
+FBSR_TS = 64.35      # FBSR renders ~64.35 px/tile with a ~10px fixed margin (measured via probe)
+FBSR_MARGIN = 10.3
+
+
+def _box_game(img, grid, ml, mt, M=16, color=HL):
+    """Highlight the hole on an FBSR render. FBSR's px/tile is fixed (measured), so map the
+    hole's top-left cell to pixels via the entity bbox: content edge (min_cell-0.5) sits at
+    the fixed margin. Accurate to ~1 tile (edge multi-tile entities can shift it slightly)."""
+    occ = np.argwhere(grid != EMPTY_ID)
+    if len(occ) < 1:
+        return img
+    minr, minc = occ.min(0)
+    x0 = FBSR_MARGIN + (ml - int(minc)) * FBSR_TS
+    y0 = FBSR_MARGIN + (mt - int(minr)) * FBSR_TS
+    if x0 < -FBSR_TS or y0 < -FBSR_TS or x0 > img.width or y0 > img.height:
+        return img
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle([x0, y0, x0 + M * FBSR_TS, y0 + M * FBSR_TS], fill=color + (38,))
+    d.rectangle([x0, y0, x0 + M * FBSR_TS, y0 + M * FBSR_TS], outline=color + (255,), width=6)
+    return img
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", type=Path, required=True)
@@ -73,18 +105,25 @@ def main(argv=None):
     payload = load_dataset(args.data)
     split = make_datasets(payload)["test"]
 
-    # pick content-rich, well-reconstructed examples from a bounded scan
+    # Scan a chunk of the test set; in-hole accuracy for each content-rich example.
     cand = []
     with torch.no_grad():
         for i in range(min(args.scan, len(split))):
             s = split[i]; y, m = s["y"].numpy(), s["mask"].numpy()
             nz = int((y[m] != EMPTY_ID).sum())
-            if nz < 30:
+            if nz < 20:
                 continue
             pred = model(s["x"].unsqueeze(0)).argmax(1)[0].numpy()
             cand.append((float((pred[m] == y[m]).mean()), nz, i))
-    cand.sort(reverse=True)
-    picks = [i for _, _, i in cand[:args.num]] or list(range(min(args.num, len(split))))
+    cand.sort(reverse=True)                                      # best -> worst
+    median_acc = float(np.median([c[0] for c in cand])) if cand else 0.0
+    # NOT cherry-picked: take examples evenly spaced across the accuracy distribution, so the
+    # gallery shows the realistic range (best..worst); each is labeled with its own accuracy.
+    if cand:
+        ks = sorted({int(round(p * (len(cand) - 1))) for p in np.linspace(0.05, 0.92, args.num)})
+        picks = [cand[k][2] for k in ks]
+    else:
+        picks = list(range(min(args.num, len(split))))
 
     tmp = Path("/tmp/report_render"); tmp.mkdir(parents=True, exist_ok=True)
     jobs, examples = [], []
@@ -94,23 +133,28 @@ def main(argv=None):
             pred = model(s["x"].unsqueeze(0)).argmax(1)[0].numpy()
             pf = y.copy(); pf[mask] = pred[mask]
             acc = float((pred[mask] == y[mask]).mean())
-            panel = hconcat([render_grid(xin, vocab, cell=9, mask=mask),
-                             render_grid(y, vocab, cell=9, mask=mask),
-                             render_grid(pf, vocab, cell=9, mask=mask),
-                             render_diff(y, pf, mask, cell=9)])
+            mt, ml = (int(v) for v in np.argwhere(mask).min(0))
+            subs = [render_grid(xin, vocab, cell=9, mask=mask),
+                    render_grid(y, vocab, cell=9, mask=mask),
+                    render_grid(pf, vocab, cell=9, mask=mask),
+                    render_diff(y, pf, mask, cell=9)]
+            for sub in subs[1:]:                      # outline the predicted hole on target/pred/diff
+                _box_abstract(sub, ml, mt, 16, 9)
+            panel = hconcat(subs)
             for tag, g in (("target", y), ("prediction", pf)):
                 bp = grid_to_blueprint(g, vocab, label=f"ex{i} {tag}", version=VERSION_2_0)
                 (tmp / f"{rank}_{tag}.txt").write_text(encode_blueprint_string(bp))
                 jobs.append((str((tmp / f"{rank}_{tag}.txt").resolve()),
                              str((tmp / f"{rank}_{tag}.png").resolve())))
             examples.append({"i": i, "rank": rank, "acc": acc,
-                             "nz": int((y[mask] != EMPTY_ID).sum())})
+                             "nz": int((y[mask] != EMPTY_ID).sum()),
+                             "panel": panel, "y": y, "pf": pf, "mt": mt, "ml": ml})
 
     print(f"rendering {len(jobs)} blueprints via FBSR ...")
     fbsr_render(jobs, args.fbsr_run)
 
     args.out.mkdir(parents=True, exist_ok=True)
-    html = _html(model, vocab, ckpt, payload, examples, tmp)
+    html = _html(model, vocab, ckpt, payload, examples, tmp, median_acc)
     (args.out / "index.html").write_text(html)
     print(f"wrote report -> {args.out / 'index.html'}  ({len(html)//1024} KB)")
     return 0
@@ -132,20 +176,26 @@ def _gallery(examples, tmp):
     cards = ""
     for ex in examples:
         gt = tmp / f"{ex['rank']}_target.png"; pr = tmp / f"{ex['rank']}_prediction.png"
-        if not (gt.exists() and pr.exists()):
-            continue
+        game = ""
+        if gt.exists() and pr.exists():
+            game = (
+                '<div class=game>'
+                f'<figure><img src="{b64(Image.open(gt), 720, "JPEG")}"><figcaption>TARGET — game render</figcaption></figure>'
+                f'<figure><img src="{b64(Image.open(pr), 720, "JPEG")}"><figcaption>PREDICTION — game render</figcaption></figure>'
+                '</div>')
         cards += (
             '<div class=ex>'
             f'<div class=exhead>Example {ex["i"]} · {ex["nz"]} entities in the hole · '
             f'in-hole accuracy <b>{ex["acc"]:.0%}</b></div>'
-            '<div class=game>'
-            f'<figure><img src="{b64(Image.open(gt), 720, "JPEG")}"><figcaption>TARGET (ground truth)</figcaption></figure>'
-            f'<figure><img src="{b64(Image.open(pr), 720, "JPEG")}"><figcaption>PREDICTION (model fills the 16×16 hole)</figcaption></figure>'
-            '</div></div>')
-    return cards or "<p>(FBSR renders unavailable — run with the FBSR service alive)</p>"
+            f'<img class=abs src="{b64(ex["panel"], 1120)}">'
+            '<div class=lbl><b style="color:#0ea">Cyan box = the exact 16×16 region the model predicted.</b> '
+            'Panels: input (hole greyed) · target · prediction · diff (green=correct, red=wrong). '
+            'Game renders below show the same target vs prediction in real Factorio graphics.</div>'
+            f'{game}</div>')
+    return cards or "<p>(no examples)</p>"
 
 
-def _html(model, vocab, ckpt, payload, examples, tmp):
+def _html(model, vocab, ckpt, payload, examples, tmp, median_acc=0.0):
     n_tr = len(payload["splits"]["train"]); n_v = len(payload["splits"]["val"]); n_te = len(payload["splits"]["test"])
     cfg = ckpt["config"]
     return f"""<!doctype html><html><head><meta charset=utf-8>
@@ -162,6 +212,8 @@ def _html(model, vocab, ckpt, payload, examples, tmp):
  .exhead{{color:#cde;margin-bottom:10px;font-size:14px}} b{{color:#fff}}
  .game{{display:flex;gap:16px;flex-wrap:wrap}} .game figure{{margin:0;flex:1;min-width:320px}}
  .game img{{width:100%;border-radius:8px;background:#0d0d10}} figcaption{{color:#9aa;font-size:12px;margin-top:5px}}
+ img.abs{{width:100%;max-width:1120px;image-rendering:pixelated;border-radius:6px}}
+ .lbl{{color:#889;font-size:12px;margin:5px 0 10px}}
  .kpi{{display:flex;gap:26px;flex-wrap:wrap;margin:10px 0}} .kpi div{{font-size:13px;color:#9aa}} .kpi b{{display:block;font-size:24px;color:#fff}}
  code{{color:#fc9}} .pill{{display:inline-block;background:#2a3a2f;color:#8e8;border-radius:20px;padding:2px 11px;font-size:12px;margin-left:8px}}
 </style></head><body>
@@ -193,9 +245,12 @@ or axial <b>attention hurts</b>, and pure <b>scale is a wash</b>: the gap was ne
 <li><b>Result:</b> 10,764 usable blueprints, vocab 280. The metrics above are honest generalization, not memorized near-duplicates.</li>
 </ul></div>
 
-<h2>Predictions in real Factorio graphics</h2>
-<div class=sub>Each prediction is exported to a real Factorio 2.0 blueprint string and rendered with FBSR (the engine
-FactorioBin uses), so these are pixel-faithful. The model fills the 16×16 hole; compare TARGET vs PREDICTION.</div>
+<h2>Predictions — what the model filled</h2>
+<div class=sub><b>Not cherry-picked:</b> these examples are sampled evenly across the test-set accuracy
+distribution (median in-hole accuracy ≈ <b>{median_acc:.0%}</b>), so they span the realistic range from
+near-perfect to hard/ambiguous — each is labeled with its own accuracy. The <b style=color:#0ea>cyan box</b>
+on the abstract panel marks the exact 16×16 region the model predicted (everything else is given context);
+the game renders below are pixel-faithful FBSR (the engine FactorioBin uses).</div>
 {_gallery(examples, tmp)}
 </body></html>"""
 
