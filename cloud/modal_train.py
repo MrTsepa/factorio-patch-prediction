@@ -15,6 +15,8 @@ and the scaled dataset built locally at LOCAL_DATASET (see below).
 """
 
 import os
+import time
+from pathlib import Path
 
 import modal
 
@@ -39,6 +41,7 @@ app = modal.App("factorio-patch-inpaint")
 LOCAL_DATASET = next((p for p in ("data/processed/dataset5k.pt",
                                   "data/processed/dataset20.pt")
                       if os.path.exists(p)), "data/processed/dataset5k.pt")
+DATA_TAG = Path(LOCAL_DATASET).stem.replace("dataset", "") or "ds"   # e.g. "5k"
 print(f"[modal_train] baking dataset: {LOCAL_DATASET}")
 
 image = (
@@ -78,7 +81,8 @@ CONFIGS = [
               secrets=[modal.Secret.from_name("wandb")],
               volumes={"/runs": vol})
 def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
-                 val_samples: int, patience: int, max_seconds: float):
+                 val_samples: int, patience: int, max_seconds: float,
+                 group: str = None, tags: list = None):
     from argparse import Namespace
     from pathlib import Path
 
@@ -99,7 +103,8 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
         num_workers=4, device="auto", seed=0, amp="auto", compile=True,
         # --- early stopping + 3h wall-clock budget ---
         patience=patience, min_delta=1e-3, max_seconds=max_seconds, restore_best=True,
-        wandb="factorio-patch-inpaint", run_name=run_name)
+        wandb="factorio-patch-inpaint", run_name=run_name,
+        wandb_group=group, wandb_tags=tags)
     summary = train(args, on_epoch_end=vol.commit)   # persist checkpoints each epoch
     vol.commit()
     test = (summary.get("test") or {}).get("model", {})
@@ -119,13 +124,19 @@ def main(epochs: int = 80, samples: int = 16000, val_samples: int = 4096,
          patience: int = 8, smoke: bool = False):
     """Launch U-Net (A10G) + transformer (A100-40GB) in parallel, each 3h-capped."""
     max_seconds = 120.0 if smoke else float(WALL_SOFT_S)
+    # Unique + descriptive wandb names: <arch-config>-<data>-[smoke-]<MMDD-HHMM>, all
+    # runs of one launch share a group so they overlay/compare cleanly (no more dupes).
+    launch = ("smoke-" if smoke else "") + time.strftime("%m%d-%H%M")
+    group = f"{DATA_TAG}-{launch}"
     handles = []
     for c in CONFIGS:
         gpu = c["gpu"]                               # smoke validates the REAL per-arch GPU
+        run_name = f"{c['name']}-{DATA_TAG}-{launch}"
+        tags = [c["arch"], f"data:{DATA_TAG}", f"gpu:{gpu}"] + (["smoke"] if smoke else [])
         fn = train_remote.with_options(gpu=gpu, timeout=WALL_HARD_S)
-        handles.append((c["name"], fn.spawn(
-            c["arch"], c["name"], c["hp"], epochs, samples,
-            val_samples, patience, max_seconds)))
+        handles.append((run_name, fn.spawn(
+            c["arch"], run_name, c["hp"], epochs, samples,
+            val_samples, patience, max_seconds, group, tags)))
     print(f"launched {len(handles)} runs (epochs<={epochs}, samples={samples}, "
           f"patience={patience}, wall-cap={max_seconds:.0f}s)")
     for name, h in handles:

@@ -168,7 +168,9 @@ def train(args, on_epoch_end=None) -> dict:
     run = None
     if args.wandb:
         import wandb
-        run = wandb.init(project=args.wandb, name=args.run_name, config={
+        run = wandb.init(project=args.wandb, name=args.run_name,
+                         group=getattr(args, "wandb_group", None),
+                         tags=getattr(args, "wandb_tags", None), config={
             "arch": args.arch, "d_model": args.d_model, "depth": args.depth,
             "heads": args.heads, "patch": args.patch, "params": model.num_params(),
             "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
@@ -332,7 +334,9 @@ def main(argv=None) -> int:
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--wandb", default=None, help="wandb project to log to (disabled if unset)")
-    ap.add_argument("--run-name", default=None, help="wandb run name")
+    ap.add_argument("--run-name", default=None, help="wandb run name (make it unique + descriptive)")
+    ap.add_argument("--wandb-group", default=None, help="wandb group (e.g. one launch id)")
+    ap.add_argument("--wandb-tags", nargs="*", default=None, help="wandb tags for filtering")
     ap.add_argument("--amp", choices=["auto", "on", "off"], default="auto",
                     help="bfloat16 autocast (auto = on for CUDA)")
     ap.add_argument("--compile", action="store_true", help="torch.compile the model (CUDA)")
