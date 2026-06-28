@@ -32,7 +32,7 @@ def maskgit_decode(model, x, mask, steps: int = 10):
         with torch.autocast(device_type=cur.device.type, dtype=torch.bfloat16,
                             enabled=(cur.device.type == "cuda")):
             logits = model(cur)
-        conf, pred = logits.softmax(dim=1).max(dim=1)              # [B,H,W]
+        conf, pred = logits.float().softmax(dim=1).max(dim=1)      # fp32: bf16 ties dilute ranking
         n_after = math.ceil(math.cos(math.pi / 2 * t / steps) * N)
         n_commit = int(remaining.view(B, -1).sum(1).max().item()) - n_after
         if n_commit <= 0:
@@ -146,6 +146,11 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None,
     acc_prior = MaskedCounts()
     io_arr = torch.tensor(io_of_ids(vocab), device=device) if vocab is not None else None
     n_io_target = n_io_correct = 0
+    # When decoding iteratively, ALSO score the SAME model under plain single-shot argmax
+    # (nearly free — logits already computed) so the comparison decomposes into a 2x2:
+    # maskgit-iter vs maskgit-argmax isolates DECODING; maskgit-argmax vs single-shot
+    # baseline isolates the variable-mask TRAINING scheme.
+    acc_ss = MaskedCounts() if (maskgit_steps and maskgit_steps > 0) else None
     for batch in loader:
         x = batch["x"].to(device)
         y = batch["y"].to(device)
@@ -153,12 +158,13 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None,
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=(device.type == "cuda")):
             logits = model(x)
-        if maskgit_steps and maskgit_steps > 0:
-            preds = maskgit_decode(model, x, mask, steps=maskgit_steps)   # iterative fill
-        else:
-            preds = logits.argmax(dim=1)
         k = min(topk, logits.shape[1])
         topk_idx = logits.topk(k=k, dim=1).indices
+        if acc_ss is not None:
+            preds = maskgit_decode(model, x, mask, steps=maskgit_steps)   # iterative fill
+            acc_ss.update(logits.argmax(dim=1), y, mask, topk_idx=topk_idx)
+        else:
+            preds = logits.argmax(dim=1)
         acc_model.update(preds, y, mask, topk_idx=topk_idx)
         acc_empty.update(torch.full_like(y, EMPTY_ID), y, mask)
         acc_prior.update(torch.full_like(y, prior_id), y, mask)
@@ -172,6 +178,8 @@ def evaluate(model, loader, device, prior_id: int, topk: int = 5, vocab=None,
         "baseline_empty": acc_empty.metrics(),
         "baseline_majority_entity": acc_prior.metrics(),
     }
+    if acc_ss is not None:
+        res["model_singleshot"] = acc_ss.metrics(with_topk=True)
     if io_arr is not None:
         res["model"]["io_acc"] = (n_io_correct / n_io_target) if n_io_target else 0.0
         res["model"]["io_cells"] = n_io_target

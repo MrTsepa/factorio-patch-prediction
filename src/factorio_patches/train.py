@@ -233,6 +233,11 @@ def train(args, on_epoch_end=None) -> dict:
         print(f"\nepoch {epoch}/{args.epochs}  train_loss={train_loss:.4f}  ({dt:.1f}s)")
         if val_metrics:
             print(format_metrics("val", val_metrics))
+        if val_metrics and "model_singleshot" in val_metrics:
+            ss = val_metrics["model_singleshot"]; it = val_metrics["model"]
+            print(f"[val] single-shot : entity_acc={ss['entity_token_acc']:.3f} "
+                  f"nonempty_f1={ss['non_empty_f1']:.3f}  "
+                  f"(iterative-decode gain {it['entity_token_acc'] - ss['entity_token_acc']:+.3f})")
 
         # checkpoints (last.pt every epoch; best.pt on val improvement below)
         ckpt = {"model_state": model.state_dict(), "vocab_tokens": vocab.itos,
@@ -275,6 +280,9 @@ def train(args, on_epoch_end=None) -> dict:
             # val/* includes io_acc (evaluate() is called with vocab) -> logs val/io_acc
             log.update({f"val/{k}": v for k, v in val_metrics["model"].items()
                         if isinstance(v, (int, float))})
+            if "model_singleshot" in val_metrics:   # 2x2: isolate decoding vs training-scheme
+                log.update({f"val_ss/{k}": v for k, v in val_metrics["model_singleshot"].items()
+                            if isinstance(v, (int, float))})
             md_, bm_ = val_metrics["model"], val_metrics["baseline_majority_entity"]
             log.update({f"val_baseline/{k}": bm_[k] for k in ("entity_token_acc", "non_empty_f1")})
             # rising "lift over majority baseline" is more informative than the flat line

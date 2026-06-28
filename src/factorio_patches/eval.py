@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 
 def load_checkpoint(path: Path, device):
-    ckpt = torch.load(path, weights_only=False)
+    ckpt = torch.load(path, weights_only=False, map_location=device)   # cloud ckpts are CUDA
     vocab = Vocab(ckpt["vocab_tokens"])
     cfg = ckpt["config"]
     model = build_model(cfg.get("arch", "unet"), len(vocab), d_model=cfg["d_model"],

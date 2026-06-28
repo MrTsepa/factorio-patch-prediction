@@ -132,7 +132,9 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
     summary = train(args, on_epoch_end=vol.commit)   # persist checkpoints each epoch
     vol.commit()
     test = (summary.get("test") or {}).get("model", {})
+    test_ss = (summary.get("test") or {}).get("model_singleshot", {})   # MaskGIT 2x2
     return {"run": run_name, "arch": arch, "params": summary.get("model_params"),
+            "test_singleshot_entity_acc": test_ss.get("entity_token_acc"),
             "epochs_run": summary.get("epochs_run"), "best_epoch": summary.get("best_epoch"),
             "stopped_early": summary.get("stopped_early"),
             "wall_clock_s": summary.get("wall_clock_s"),
