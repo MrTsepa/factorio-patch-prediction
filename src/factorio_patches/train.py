@@ -122,7 +122,8 @@ def train(args, on_epoch_end=None) -> dict:
     payload = load_dataset(ds_path)
     cfg = payload["config"]
     # Honor the dataset's crop/mask (the model is conv so it adapts, but keep them aligned).
-    ds = make_datasets(payload, train_length=args.train_samples, val_length=args.val_samples, seed=args.seed)
+    ds = make_datasets(payload, train_length=args.train_samples, val_length=args.val_samples,
+                       seed=args.seed, size_power=getattr(args, "size_power", 0.0))
     vocab = ds["vocab"]
     prior_id = most_common_entity_id(payload["splits"]["train"])
 
@@ -347,6 +348,8 @@ def main(argv=None) -> int:
     ap.add_argument("--depth", type=int, default=6, help="transformer encoder layers")
     ap.add_argument("--heads", type=int, default=6, help="transformer attention heads")
     ap.add_argument("--patch", type=int, default=2, help="transformer patchify stride (power of 2)")
+    ap.add_argument("--size-power", type=float, default=0.0,
+                    help="mild size-weighting of TRAIN blueprint sampling (0=uniform, 0.5=sqrt)")
     ap.add_argument("--train-samples", type=int, default=4000, help="patches sampled per epoch")
     ap.add_argument("--val-samples", type=int, default=1000)
     ap.add_argument("--num-workers", type=int, default=0)

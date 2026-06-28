@@ -101,6 +101,7 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
         heads=hp.get("heads", 8), patch=hp.get("patch", 2),
         train_samples=samples, val_samples=val_samples,
         num_workers=4, device="auto", seed=0, amp="auto", compile=True,
+        size_power=0.5,   # mild size-weighting so big factories' content gets covered
         # --- early stopping + 3h wall-clock budget ---
         patience=patience, min_delta=1e-3, max_seconds=max_seconds, restore_best=True,
         wandb="factorio-patch-inpaint", run_name=run_name,

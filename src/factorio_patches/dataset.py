@@ -226,6 +226,7 @@ class FactorioPatchDataset(Dataset):
         min_nonempty_frac: float = 0.05,
         max_attempts: int = 12,
         seed: int = 0,
+        size_power: float = 0.0,
     ):
         if mask_size > crop_size:
             raise ValueError("mask_size must be <= crop_size")
@@ -245,13 +246,26 @@ class FactorioPatchDataset(Dataset):
             self.length = length
         else:
             self.length = max(len(grids) * samples_per_bp, 256)
+        # Optional MILD size-weighting: draw a blueprint with prob ∝ occupied_cells**size_power
+        # (0 = uniform; 0.5 = sqrt = mild) so big factories' content isn't under-sampled
+        # relative to tiny blueprints, without letting a few mega-factories dominate.
+        self.size_power = size_power
+        if size_power and size_power > 0.0:
+            sizes = np.array([len(self.occupied[i]) for i in self.nonempty_grids], dtype=np.float64)
+            self._cumw = np.cumsum(np.power(np.maximum(sizes, 1.0), size_power))
+        else:
+            self._cumw = None
         self._rng = np.random.default_rng(seed)
 
     def __len__(self) -> int:
         return self.length
 
     def _pick_grid(self, rng) -> int:
-        return int(self.nonempty_grids[rng.integers(len(self.nonempty_grids))])
+        ng = self.nonempty_grids
+        if self._cumw is None:
+            return int(ng[rng.integers(len(ng))])
+        j = int(np.searchsorted(self._cumw, rng.random() * self._cumw[-1], side="right"))
+        return int(ng[min(j, len(ng) - 1)])
 
     def _make_sample(self, gi: int, rng):
         grid = self.grids[gi]
@@ -313,8 +327,12 @@ class FactorioPatchDataset(Dataset):
 
 
 def make_datasets(payload: dict, train_length: int | None = None,
-                  val_length: int | None = None, seed: int = 0):
-    """Build train/val/test FactorioPatchDataset objects + Vocab from a payload."""
+                  val_length: int | None = None, seed: int = 0, size_power: float = 0.0):
+    """Build train/val/test FactorioPatchDataset objects + Vocab from a payload.
+
+    ``size_power`` mildly weights TRAIN blueprint sampling by occupied-cell count (0 =
+    uniform, 0.5 = sqrt); val/test stay uniform so the eval distribution is unchanged.
+    """
     cfg = payload["config"]
     C, M = cfg["crop_size"], cfg["mask_size"]
     vocab = Vocab(payload["vocab_tokens"])
@@ -325,7 +343,8 @@ def make_datasets(payload: dict, train_length: int | None = None,
         if not grids:
             return None
         return FactorioPatchDataset(grids, crop_size=C, mask_size=M, train=train,
-                                    length=length, seed=seed)
+                                    length=length, seed=seed,
+                                    size_power=size_power if train else 0.0)
 
     n_val_default = max(len(sp.get("val") or []) * 8, 128)
     n_test_default = max(len(sp.get("test") or []) * 8, 128)
