@@ -100,7 +100,7 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
         # --- early stopping + 3h wall-clock budget ---
         patience=patience, min_delta=1e-3, max_seconds=max_seconds, restore_best=True,
         wandb="factorio-patch-inpaint", run_name=run_name)
-    summary = train(args)
+    summary = train(args, on_epoch_end=vol.commit)   # persist checkpoints each epoch
     vol.commit()
     test = (summary.get("test") or {}).get("model", {})
     return {"run": run_name, "arch": arch, "params": summary.get("model_params"),

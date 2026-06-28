@@ -109,7 +109,9 @@ def _seed_worker(_worker_id):
         info.dataset._rng = np.random.default_rng(info.seed % (2 ** 32))
 
 
-def train(args) -> dict:
+def train(args, on_epoch_end=None) -> dict:
+    """Train; ``on_epoch_end()`` (if given) is called after each epoch's checkpoint save —
+    used on Modal to vol.commit() so a mid-run crash doesn't lose all checkpoints."""
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = pick_device(args.device)
@@ -275,6 +277,9 @@ def train(args) -> dict:
             run.log(log)
 
         render_epoch_samples(model, ds["val"], vocab, device, out / "preds" / f"epoch_{epoch:02d}", n=6)
+
+        if on_epoch_end is not None:
+            on_epoch_end()      # e.g. vol.commit() on Modal -> checkpoints survive a crash
 
         if stop_reason:
             print(f"\n[early-stop] stopping after epoch {epoch}: {stop_reason}")
