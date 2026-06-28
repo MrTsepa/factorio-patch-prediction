@@ -161,8 +161,13 @@ def train(args) -> dict:
 
     history = []
     best_metric = -1.0
+    best_epoch = 0
+    no_improve = 0
+    epoch_times: list[float] = []
+    stop_reason = None
     metrics_path = out / "metrics.jsonl"
     metrics_path.write_text("")
+    t_start = time.time()  # wall-clock budget starts after data/model/compile setup
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -203,23 +208,8 @@ def train(args) -> dict:
         print(f"\nepoch {epoch}/{args.epochs}  train_loss={train_loss:.4f}  ({dt:.1f}s)")
         if val_metrics:
             print(format_metrics("val", val_metrics))
-        if run and val_metrics:
-            import wandb
-            log = {"epoch": epoch, "train/loss": train_loss, "train/lr": sched.get_last_lr()[0],
-                   "train/grad_norm": grad_norm, "train/epoch_time_s": train_dt,
-                   "train/samples_per_sec": samples_per_sec}
-            log.update({f"val/{k}": v for k, v in val_metrics["model"].items()
-                        if isinstance(v, (int, float))})
-            md_, bm_ = val_metrics["model"], val_metrics["baseline_majority_entity"]
-            log.update({f"val_baseline/{k}": bm_[k] for k in ("entity_token_acc", "non_empty_f1")})
-            # rising "lift over majority baseline" is more informative than the flat line
-            log["val/entity_acc_lift"] = md_["entity_token_acc"] - bm_["entity_token_acc"]
-            log["val/f1_lift"] = md_["non_empty_f1"] - bm_["non_empty_f1"]
-            if epoch % max(1, args.epochs // 5) == 0 or epoch == args.epochs:
-                log["val/predictions"] = wandb.Image(_pred_panel(model, ds["val"], vocab, device))
-            run.log(log)
 
-        # checkpoints
+        # checkpoints (last.pt every epoch; best.pt on val improvement below)
         ckpt = {"model_state": model.state_dict(), "vocab_tokens": vocab.itos,
                 "config": {"crop_size": cfg["crop_size"], "mask_size": cfg["mask_size"],
                            "arch": args.arch, "d_model": args.d_model,
@@ -227,27 +217,73 @@ def train(args) -> dict:
                 "epoch": epoch,
                 "val_metrics": val_metrics, "prior_id": prior_id, "dataset": str(ds_path)}
         torch.save(ckpt, out / "last.pt")
+
+        # --- early stopping: monitor val entity_token_acc with a min-delta ---
         crit = val_metrics["model"]["entity_token_acc"] if val_metrics else -1.0
-        if crit > best_metric:
-            best_metric = crit
+        if crit > best_metric + args.min_delta:
+            best_metric, best_epoch, no_improve = crit, epoch, 0
             torch.save(ckpt, out / "best.pt")
             print(f"  -> new best (val entity_token_acc={crit:.3f}) saved to best.pt")
+        else:
+            no_improve += 1
+            print(f"  -> no improvement ({no_improve}/{args.patience}); "
+                  f"best={best_metric:.3f} @ epoch {best_epoch}")
+
+        # --- stop conditions (evaluated AFTER best.pt is saved so it is always current) ---
+        epoch_times.append(dt)
+        elapsed = time.time() - t_start
+        if args.patience > 0 and no_improve >= args.patience:
+            stop_reason = (f"no val improvement in {no_improve} epochs "
+                           f"(best={best_metric:.3f} @ epoch {best_epoch})")
+        elif args.max_seconds > 0 and elapsed + 1.15 * max(epoch_times) >= args.max_seconds:
+            stop_reason = (f"wall-clock cap: {elapsed:.0f}s elapsed; next epoch "
+                           f"(~{max(epoch_times):.0f}s) would exceed {args.max_seconds:.0f}s budget")
+
+        if run and val_metrics:
+            import wandb
+            log = {"epoch": epoch, "train/loss": train_loss, "train/lr": sched.get_last_lr()[0],
+                   "train/grad_norm": grad_norm, "train/epoch_time_s": train_dt,
+                   "train/samples_per_sec": samples_per_sec,
+                   "early_stop/no_improve": no_improve,
+                   "early_stop/best_val_entity_acc": best_metric,
+                   "time/elapsed_s": round(elapsed, 1)}
+            # val/* includes io_acc (evaluate() is called with vocab) -> logs val/io_acc
+            log.update({f"val/{k}": v for k, v in val_metrics["model"].items()
+                        if isinstance(v, (int, float))})
+            md_, bm_ = val_metrics["model"], val_metrics["baseline_majority_entity"]
+            log.update({f"val_baseline/{k}": bm_[k] for k in ("entity_token_acc", "non_empty_f1")})
+            # rising "lift over majority baseline" is more informative than the flat line
+            log["val/entity_acc_lift"] = md_["entity_token_acc"] - bm_["entity_token_acc"]
+            log["val/f1_lift"] = md_["non_empty_f1"] - bm_["non_empty_f1"]
+            if epoch % max(1, args.epochs // 5) == 0 or stop_reason or epoch == args.epochs:
+                log["val/predictions"] = wandb.Image(_pred_panel(model, ds["val"], vocab, device))
+            run.log(log)
 
         render_epoch_samples(model, ds["val"], vocab, device, out / "preds" / f"epoch_{epoch:02d}", n=6)
 
-    # Final test evaluation with the best checkpoint.
-    summary = {"best_val_entity_token_acc": best_metric, "epochs": args.epochs,
+        if stop_reason:
+            print(f"\n[early-stop] stopping after epoch {epoch}: {stop_reason}")
+            break
+
+    # --- restore best weights (early stopping) before the final test eval ---
+    best_path = out / "best.pt"
+    if args.restore_best and best_path.exists():
+        best = torch.load(best_path, weights_only=False)
+        model.load_state_dict(best["model_state"])
+        print(f"\nrestored best weights from epoch {best['epoch']} "
+              f"(val entity_token_acc={best_metric:.3f})")
+    elif not best_path.exists():
+        print("\n[warn] no best.pt (no validation split?); keeping last weights for test")
+
+    # Final test evaluation with the (restored) best checkpoint.
+    summary = {"best_val_entity_token_acc": best_metric, "best_epoch": best_epoch,
+               "epochs_run": len(epoch_times), "epochs_cap": args.epochs,
+               "stopped_early": stop_reason is not None, "stop_reason": stop_reason,
+               "wall_clock_s": round(time.time() - t_start, 1),
                "device": str(device), "model_params": model.num_params(),
                "empty_weight": args.empty_weight, "lr": args.lr, "d_model": args.d_model,
                "crop_size": cfg["crop_size"], "mask_size": cfg["mask_size"]}
     if test_loader:
-        best_path = out / "best.pt"
-        if best_path.exists():
-            best = torch.load(best_path, weights_only=False)
-            model.load_state_dict(best["model_state"])
-            summary["best_epoch"] = best["epoch"]
-        else:
-            print("\n[warn] no best.pt (no validation split?); evaluating test with last model")
         test_metrics = evaluate(model, test_loader, device, prior_id, vocab=vocab)
         print("\n=== TEST (best checkpoint) ===")
         print(format_metrics("test", test_metrics))
@@ -292,6 +328,17 @@ def main(argv=None) -> int:
     ap.add_argument("--num-workers", type=int, default=0)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=0)
+    # --- early stopping + wall-clock budget ---
+    ap.add_argument("--patience", type=int, default=8,
+                    help="early-stop after this many epochs with no val improvement (<=0 disables)")
+    ap.add_argument("--min-delta", type=float, default=1e-3,
+                    help="min val entity_token_acc gain that counts as an improvement")
+    ap.add_argument("--max-seconds", type=float, default=0.0,
+                    help="hard wall-clock cap (s) for the training loop; stops BEFORE an epoch "
+                         "that would exceed it, so the run never overruns (0 = no cap)")
+    ap.add_argument("--restore-best", dest="restore_best", action="store_true", default=True,
+                    help="reload best.pt weights at the end of training (default: on)")
+    ap.add_argument("--no-restore-best", dest="restore_best", action="store_false")
     args = ap.parse_args(argv)
     train(args)
     return 0
