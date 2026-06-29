@@ -149,12 +149,12 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
 # AutoResearch Phase-B: short A10G proxy runs testing training-time levers (D4 augmentation,
 # label smoothing, scale-with-aug). Edited between rounds as the greedy search proceeds.
 CONFIGS_AUTO = [
-    dict(arch="unet", name="ar-aug", gpu="A10G",
+    # Round 2: aug at 80ep already beat baseline WITH TTA (undertrained) -> train it LONG;
+    # also test aug+capacity (scale alone was a wash, but aug may unlock it).
+    dict(arch="unet", name="ar-auglong", gpu="A10G",
          hp=dict(d_model=96, lr=2e-3, batch_size=128, aug=True)),
-    dict(arch="unet", name="ar-ls", gpu="A10G",
-         hp=dict(d_model=96, lr=2e-3, batch_size=128, label_smoothing=0.1)),
-    dict(arch="unet", name="ar-aug-ls", gpu="A10G",
-         hp=dict(d_model=96, lr=2e-3, batch_size=128, aug=True, label_smoothing=0.05)),
+    dict(arch="unet", name="ar-augbig", gpu="A10G",
+         hp=dict(d_model=128, lr=2e-3, batch_size=128, aug=True)),
 ]
 
 
@@ -182,6 +182,53 @@ def main(epochs: int = 120, samples: int = 16000, val_samples: int = 4096,
           f"samples={samples}, patience={patience}, wall-cap={max_seconds:.0f}s)")
     for name, h in handles:
         print(f"  [{name}] ->", h.get())
+
+
+@app.function(image=image, gpu="A10G", timeout=2400, volumes={"/runs": vol})
+def eval_remote(configs, n=4000):
+    """Evaluate ensemble/TTA configs on the GPU (entity-token accuracy on val + test)."""
+    from pathlib import Path
+
+    import torch
+    from factorio_patches.dataset import load_dataset
+    from factorio_patches.ensemble import entity_acc
+    from factorio_patches.eval import load_checkpoint
+    dev = torch.device("cuda")
+    p = load_dataset("/root/dataset.pt")
+    val, test = p["splits"]["val"], p["splits"]["test"]
+    cache = {}
+
+    def get(rn):
+        if rn not in cache:
+            m, v, _ = load_checkpoint(Path(f"/runs/{rn}/best.pt"), dev)
+            m.eval(); cache[rn] = (m, v)
+        return cache[rn]
+
+    out = []
+    for c in configs:
+        mods, vocab = [], None
+        for rn in c["runs"]:
+            m, vocab = get(rn); mods.append(m)
+        va = entity_acc(mods, val, vocab, dev, tta=c.get("tta", False), n=n)
+        ta = entity_acc(mods, test, vocab, dev, tta=c.get("tta", False), n=n)
+        out.append({"name": c["name"], "val": round(va, 4), "test": round(ta, 4)})
+    return out
+
+
+@app.local_entrypoint()
+def evals():
+    """GPU eval of ensemble / TTA configs (no local compute). Edit the config list."""
+    AR, PB = "-5k-0628-0326", "-5k-0629-2227"
+    cfgs = [
+        {"name": "ensemble x5 (3 arch + aug + ls)",
+         "runs": [f"unet-d96{AR}", f"unet-scaled-d80{AR}", f"unet-axial-d128{AR}", f"ar-aug{PB}", f"ar-ls{PB}"]},
+        {"name": "ensemble x4 (unet+scaled+aug+ls)",
+         "runs": [f"unet-d96{AR}", f"unet-scaled-d80{AR}", f"ar-aug{PB}", f"ar-ls{PB}"]},
+        {"name": "aug + TTA (full)", "runs": [f"ar-aug{PB}"], "tta": True},
+        {"name": "2 aug-models + TTA", "runs": [f"ar-aug{PB}", f"ar-aug-ls{PB}"], "tta": True},
+    ]
+    for r in eval_remote.remote(cfgs):
+        print(f"AR_EVAL {r['name']} | val={r['val']} test={r['test']}")
 
 
 # ---------------------------------------------------------------------------- #
