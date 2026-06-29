@@ -123,8 +123,9 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
         heads=hp.get("heads", 8), patch=hp.get("patch", 2),
         train_samples=samples, val_samples=val_samples,
         num_workers=4, device="auto", seed=0, amp="auto", compile=True,
-        size_power=0.5,   # mild size-weighting so big factories' content gets covered
+        size_power=hp.get("size_power", 0.5),   # mild size-weighting
         maskgit=maskgit, maskgit_steps=maskgit_steps,
+        aug=hp.get("aug", False), label_smoothing=hp.get("label_smoothing", 0.0),
         # --- early stopping + 3h wall-clock budget ---
         patience=patience, min_delta=1e-3, max_seconds=max_seconds, restore_best=True,
         wandb="factorio-patch-inpaint", run_name=run_name,
@@ -145,13 +146,24 @@ def train_remote(arch: str, run_name: str, hp: dict, epochs: int, samples: int,
             "test_top5": test.get("top5_acc")}
 
 
+# AutoResearch Phase-B: short A10G proxy runs testing training-time levers (D4 augmentation,
+# label smoothing, scale-with-aug). Edited between rounds as the greedy search proceeds.
+CONFIGS_AUTO = [
+    dict(arch="unet", name="ar-aug", gpu="A10G",
+         hp=dict(d_model=96, lr=2e-3, batch_size=128, aug=True)),
+    dict(arch="unet", name="ar-ls", gpu="A10G",
+         hp=dict(d_model=96, lr=2e-3, batch_size=128, label_smoothing=0.1)),
+    dict(arch="unet", name="ar-aug-ls", gpu="A10G",
+         hp=dict(d_model=96, lr=2e-3, batch_size=128, aug=True, label_smoothing=0.05)),
+]
+
+
 @app.local_entrypoint()
 def main(epochs: int = 120, samples: int = 16000, val_samples: int = 4096,
-         patience: int = 10, smoke: bool = False, maskgit: bool = False):
-    """Launch a parallel comparison (4 variants), each 3h-capped. --maskgit swaps to the
-    MaskGIT-across-backbones set (variable-mask training + iterative-decode eval)."""
+         patience: int = 10, smoke: bool = False, maskgit: bool = False, auto: bool = False):
+    """Launch a parallel comparison, each 3h-capped. --maskgit / --auto swap the config set."""
     max_seconds = 120.0 if smoke else float(WALL_SOFT_S)
-    configs = CONFIGS_MASKGIT if maskgit else CONFIGS
+    configs = CONFIGS_AUTO if auto else (CONFIGS_MASKGIT if maskgit else CONFIGS)
     # Unique + descriptive wandb names: <arch-config>-<data>-[smoke-]<MMDD-HHMM>, all
     # runs of one launch share a group so they overlay/compare cleanly (no more dupes).
     launch = ("smoke-" if smoke else "") + time.strftime("%m%d-%H%M")

@@ -228,6 +228,8 @@ class FactorioPatchDataset(Dataset):
         seed: int = 0,
         size_power: float = 0.0,
         maskgit: bool = False,
+        aug: bool = False,
+        perms=None,
     ):
         if mask_size > crop_size:
             raise ValueError("mask_size must be <= crop_size")
@@ -236,6 +238,8 @@ class FactorioPatchDataset(Dataset):
         self.M = mask_size
         self.train = train
         self.maskgit = maskgit
+        self.aug = aug
+        self.perms = perms
         self.min_nonempty_frac = min_nonempty_frac
         self.max_attempts = max_attempts
         self.seed = seed
@@ -272,6 +276,11 @@ class FactorioPatchDataset(Dataset):
     def _make_sample(self, gi: int, rng):
         grid = self.grids[gi]
         occ = self.occupied[gi]
+        if self.aug and self.perms is not None:        # random D4 transform (rotate/reflect + dir remap)
+            from .symmetry import D4, transform_grid
+            k = int(rng.integers(len(D4)))
+            grid = transform_grid(grid, D4[k][0], D4[k][1], self.perms[k])
+            occ = np.argwhere(grid != EMPTY_ID)
         C, M = self.C, self.M
         best = None      # highest mask non-empty frac seen (fallback)
         best_ctx = None  # highest frac among attempts with adequate context
@@ -340,7 +349,7 @@ class FactorioPatchDataset(Dataset):
 
 def make_datasets(payload: dict, train_length: int | None = None,
                   val_length: int | None = None, seed: int = 0, size_power: float = 0.0,
-                  maskgit: bool = False):
+                  maskgit: bool = False, aug: bool = False):
     """Build train/val/test FactorioPatchDataset objects + Vocab from a payload.
 
     ``size_power`` mildly weights TRAIN blueprint sampling by occupied-cell count (0 =
@@ -350,6 +359,10 @@ def make_datasets(payload: dict, train_length: int | None = None,
     C, M = cfg["crop_size"], cfg["mask_size"]
     vocab = Vocab(payload["vocab_tokens"])
     sp = payload["splits"]
+    perms = None
+    if aug:
+        from .symmetry import build_perms
+        perms = build_perms(vocab)
 
     def mk(name, train, length):
         grids = sp[name]
@@ -358,7 +371,8 @@ def make_datasets(payload: dict, train_length: int | None = None,
         return FactorioPatchDataset(grids, crop_size=C, mask_size=M, train=train,
                                     length=length, seed=seed,
                                     size_power=size_power if train else 0.0,
-                                    maskgit=maskgit and train)
+                                    maskgit=maskgit and train,
+                                    aug=aug and train, perms=perms)
 
     n_val_default = max(len(sp.get("val") or []) * 8, 128)
     n_test_default = max(len(sp.get("test") or []) * 8, 128)

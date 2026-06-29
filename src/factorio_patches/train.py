@@ -124,7 +124,8 @@ def train(args, on_epoch_end=None) -> dict:
     # Honor the dataset's crop/mask (the model is conv so it adapts, but keep them aligned).
     mg = getattr(args, "maskgit", False)
     ds = make_datasets(payload, train_length=args.train_samples, val_length=args.val_samples,
-                       seed=args.seed, size_power=getattr(args, "size_power", 0.0), maskgit=mg)
+                       seed=args.seed, size_power=getattr(args, "size_power", 0.0), maskgit=mg,
+                       aug=getattr(args, "aug", False))
     eval_steps = args.maskgit_steps if mg else 0
     if mg:
         print(f"MaskGIT: variable-ratio masked training + {eval_steps}-step iterative decode eval")
@@ -206,7 +207,8 @@ def train(args, on_epoch_end=None) -> dict:
             mask = batch["mask"].to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                 logits = fwd(x)
-                loss = masked_ce_loss(logits, y, mask, weight=class_weight)
+                loss = masked_ce_loss(logits, y, mask, weight=class_weight,
+                                      label_smoothing=getattr(args, "label_smoothing", 0.0))
             opt.zero_grad()
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -367,6 +369,8 @@ def main(argv=None) -> int:
     ap.add_argument("--maskgit", action="store_true",
                     help="MaskGIT: variable-ratio masked training + iterative-decode eval")
     ap.add_argument("--maskgit-steps", type=int, default=8, help="iterative decode steps")
+    ap.add_argument("--aug", action="store_true", help="D4 (rotate/reflect) train augmentation")
+    ap.add_argument("--label-smoothing", type=float, default=0.0)
     ap.add_argument("--train-samples", type=int, default=4000, help="patches sampled per epoch")
     ap.add_argument("--val-samples", type=int, default=1000)
     ap.add_argument("--num-workers", type=int, default=0)

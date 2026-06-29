@@ -44,13 +44,15 @@ def maskgit_decode(model, x, mask, steps: int = 10):
 
 
 def masked_ce_loss(logits: torch.Tensor, y: torch.Tensor, mask: torch.Tensor,
-                   weight: torch.Tensor | None = None) -> torch.Tensor:
+                   weight: torch.Tensor | None = None, label_smoothing: float = 0.0) -> torch.Tensor:
     """Cross-entropy over masked cells only. logits [B,V,H,W], y/mask [B,H,W].
 
     ``weight`` is an optional per-class weight (e.g. down-weight EMPTY to fight
-    the heavy class imbalance and prevent collapse-to-empty).
+    the heavy class imbalance and prevent collapse-to-empty). ``label_smoothing``
+    softens the targets (regularization).
     """
-    loss = F.cross_entropy(logits, y, weight=weight, reduction="none")  # [B,H,W]
+    loss = F.cross_entropy(logits, y, weight=weight, reduction="none",
+                           label_smoothing=label_smoothing)  # [B,H,W]
     m = mask.float()
     return (loss * m).sum() / m.sum().clamp(min=1.0)
 
