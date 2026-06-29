@@ -31,7 +31,7 @@ train/val/test (verified zero leakage), so it measures generalization, not memor
 blueprint strings and rendered with FBSR. This is one of the higher-accuracy test examples —
 the full **[interactive report](https://htmlpreview.github.io/?https://github.com/MrTsepa/factorio-patch-prediction/blob/main/docs/report.html)**
 ([`docs/report.html`](docs/report.html)) shows a gallery sampled evenly across the accuracy
-distribution (median ≈ 60%), each with the exact predicted region outlined.*
+distribution (not cherry-picked), each labeled with its accuracy and the exact predicted region outlined.*
 
 ## What we learned (the interesting part)
 
