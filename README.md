@@ -25,6 +25,14 @@ native-2.0 + Space-Age blueprints (280-token vocab) — **~7× the majority base
 This number is honest: the dataset removes exact *and* near-duplicate blueprints across
 train/val/test (verified zero leakage), so it measures generalization, not memorization.
 
+![target vs prediction, rendered in Factorio graphics](docs/renders/prediction_example.jpg)
+
+*The model fills the masked 16×16 region; predictions are exported to real Factorio 2.0
+blueprint strings and rendered with FBSR. This is one of the higher-accuracy test examples —
+the full **[interactive report](https://htmlpreview.github.io/?https://github.com/MrTsepa/factorio-patch-prediction/blob/main/docs/report.html)**
+([`docs/report.html`](docs/report.html)) shows a gallery sampled evenly across the accuracy
+distribution (median ≈ 60%), each with the exact predicted region outlined.*
+
 ## What we learned (the interesting part)
 
 This started as a small POC and turned into a careful study. The findings:
@@ -155,5 +163,6 @@ docs/      report_native_2.0.md, findings.md
 
 Sources are public read APIs (FactorioPrints Firebase, FactorioBin). Downloaders send a
 descriptive User-Agent, dedupe and cache on disk, and never re-fetch. Raw data, decoded
-JSON, datasets, checkpoints, and rendered images are **gitignored** (and the FBSR renders
-embed Wube's copyrighted sprites, so they stay local).
+JSON, datasets, and checkpoints are **gitignored**. A sample HTML report + a render image
+are included — game-rendered blueprints are widely shared in the Factorio community
+(FactorioBin, FactorioPrints, r/factorio); the bulk of intermediate renders stay local.
