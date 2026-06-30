@@ -25,6 +25,11 @@ native-2.0 + Space-Age blueprints (280-token vocab) — **~7× the majority base
 This number is honest: the dataset removes exact *and* near-duplicate blueprints across
 train/val/test (verified zero leakage), so it measures generalization, not memorization.
 
+An autonomous **[AutoResearch](docs/autoresearch.md)** pass then lifted this to **0.589 test
+(+0.038, ≈ +7% relative)** for ~$5.5 of cloud GPU — by *discovering* that D4 augmentation and
+test-time augmentation, each a loss on its own, **compound** once the model is trained to
+equivariance.
+
 ![target vs prediction, rendered in Factorio graphics](docs/renders/prediction_example.jpg)
 
 *The model fills the masked 16×16 region; predictions are exported to real Factorio 2.0
@@ -69,6 +74,22 @@ This started as a small POC and turned into a careful study. The findings:
 Full write-ups: [`docs/report_native_2.0.md`](docs/report_native_2.0.md),
 [`docs/findings.md`](docs/findings.md). The script `scripts/build_report.py` produces a
 self-contained HTML report (metrics + architecture comparison + FBSR game-render gallery).
+
+## AutoResearch: augmentation unlocks test-time augmentation
+
+A [brain2qwerty](https://facebookresearch.github.io/brain2qwerty/)-style autonomous search —
+agents write code/configs (not just tune hyper-params), run cloud experiments, **search on the
+held-out split, confirm on test**, and greedily stack wins. Running-best vs experiment #:
+
+![AutoResearch trajectory](docs/renders/autoresearch.png)
+
+**0.551 → 0.589 test (+0.038)** over 12 experiments for ~$5.5 of Modal A10G. The non-obvious
+finding: **D4 test-time augmentation *alone* hurts** (averaging over 8 rotations/reflections only
+helps an *equivariant* model), and **D4 training augmentation *undertrained* hurts** (8× data slows
+convergence) — but **trained to convergence, augmentation makes the model equivariant, so TTA flips
+into a gain**, and the two compound (aug 0.570 → aug+TTA 0.587 → aug-ensemble+TTA **0.589**). Adding
+*non-aug* models back into the TTA ensemble drops it again — the mechanism check. Dead-ends along the
+way: label smoothing, axial attention, pure scale. Full story: **[`docs/autoresearch.md`](docs/autoresearch.md)**.
 
 ## The data
 

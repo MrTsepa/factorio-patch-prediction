@@ -219,15 +219,24 @@ def eval_remote(configs, n=4000):
 def evals():
     """GPU eval of ensemble / TTA configs (no local compute). Edit the config list."""
     AR, PB = "-5k-0628-0326", "-5k-0629-2227"
+    AL, AB = "ar-auglong-5k-0630-0011", "ar-augbig-5k-0630-0011"
+    U, S, X = f"unet-d96{AR}", f"unet-scaled-d80{AR}", f"unet-axial-d128{AR}"
+    LS, A80 = f"ar-ls{PB}", f"ar-aug{PB}"
     cfgs = [
-        {"name": "ensemble x5 (3 arch + aug + ls)",
-         "runs": [f"unet-d96{AR}", f"unet-scaled-d80{AR}", f"unet-axial-d128{AR}", f"ar-aug{PB}", f"ar-ls{PB}"]},
-        {"name": "ensemble x4 (unet+scaled+aug+ls)",
-         "runs": [f"unet-d96{AR}", f"unet-scaled-d80{AR}", f"ar-aug{PB}", f"ar-ls{PB}"]},
-        {"name": "aug + TTA (full)", "runs": [f"ar-aug{PB}"], "tta": True},
-        {"name": "2 aug-models + TTA", "runs": [f"ar-aug{PB}", f"ar-aug-ls{PB}"], "tta": True},
+        {"name": "baseline U-Net", "runs": [U]},
+        {"name": "D4 TTA (no aug -- dead end)", "runs": [U], "tta": True},
+        {"name": "label smoothing (dead end)", "runs": [LS]},
+        {"name": "U-Net axial (dead end)", "runs": [X]},
+        {"name": "ensemble x3 (arch)", "runs": [U, S, X]},
+        {"name": "D4 aug 80ep (undertrained)", "runs": [A80]},
+        {"name": "aug 80ep + TTA", "runs": [A80], "tta": True},
+        {"name": "D4 aug converged (139ep)", "runs": [AL]},
+        {"name": "aug + D4 TTA", "runs": [AL], "tta": True},
+        {"name": "aug ensemble (long+big)", "runs": [AL, AB]},
+        {"name": "aug ensemble + TTA", "runs": [AL, AB], "tta": True},
+        {"name": "aug + non-aug ens + TTA (dead end)", "runs": [AL, AB, U, S], "tta": True},
     ]
-    for r in eval_remote.remote(cfgs):
+    for r in eval_remote.remote(cfgs, n=10000):
         print(f"AR_EVAL {r['name']} | val={r['val']} test={r['test']}")
 
 
